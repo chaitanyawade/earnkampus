@@ -3,8 +3,6 @@
 
     let isOwnProfile = false;
     let currentUserData = null; // server-verified user (own profile only)
-    let map = null;
-    let mapMarker = null;
 
     document.addEventListener('DOMContentLoaded', () => {
       loadProfilePage();
@@ -31,7 +29,7 @@
         // No target — viewing own profile
         if (!sessionUser) {
           // Not logged in — redirect
-          window.location.href = 'login.html';
+          window.location.href = 'auth.html?tab=login';
           return;
         }
         isOwnProfile = true;
@@ -64,7 +62,7 @@
       area.textContent = '';
       const editBtn = document.createElement('button');
       editBtn.className = 'btn btn-outline';
-      editBtn.textContent = '✏️ Edit name';
+      editBtn.textContent = 'Edit name';
       area.appendChild(editBtn);
 
       editBtn.addEventListener('click', () => {
@@ -183,7 +181,7 @@
             msgLink.href = 'index.html';
             msgLink.className = 'btn btn-black';
             msgLink.style.fontSize = '13px';
-            msgLink.textContent = `💬 Message ${p.name || 'User'}`; // textContent (V8)
+            msgLink.textContent = `Message ${p.name || 'User'}`; // textContent (V8)
             actionArea.appendChild(msgLink);
           }
         } else {
@@ -203,15 +201,15 @@
       const collegeEl = document.getElementById('profileCollege');
       const ratingEl = document.getElementById('profileRating');
 
-      if (avatarEl) avatarEl.textContent = data.avatar || '🎓';
+      if (avatarEl) avatarEl.textContent = (data.name || '?').charAt(0).toUpperCase();
       if (nameEl) nameEl.textContent = data.name || 'Campus Member';
-      if (subtitleEl) subtitleEl.textContent = data.email || 'EarnCampus Member';
+      if (subtitleEl) subtitleEl.textContent = data.email || 'EarnKampus Member';
       if (collegeEl) collegeEl.textContent = data.college || '-';
       if (ratingEl) {
         const count = data.ratingCount || 0;
         ratingEl.textContent = count
-          ? `⭐ ${Number(data.ratingAvg).toFixed(1)} (${count} ${count === 1 ? 'rating' : 'ratings'})`
-          : '⭐ No ratings yet';
+          ? `\u2605 ${Number(data.ratingAvg).toFixed(1)} (${count} ${count === 1 ? 'rating' : 'ratings'})`
+          : 'No ratings yet';
       }
     }
 
@@ -227,12 +225,8 @@
       const container = document.getElementById('toastContainer');
       const toast = document.createElement('div');
       toast.className = 'toast';
-      const icon = document.createElement('span');
-      icon.textContent = type === 'error' ? '⚠️' : '⚡';
       const msgSpan = document.createElement('span');
       msgSpan.textContent = message; // textContent — no XSS (V8)
-      toast.appendChild(icon);
-      toast.appendChild(document.createTextNode(' '));
       toast.appendChild(msgSpan);
       container.appendChild(toast);
       setTimeout(() => {

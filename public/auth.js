@@ -50,7 +50,7 @@
         link.textContent = 'Sign Up here';
         link.addEventListener('click', (e) => { e.preventDefault(); switchTab('signup'); });
         authFooter.appendChild(link);
-        document.title = 'EarnCampus - Log In';
+        document.title = 'EarnKampus - Log In';
       } else {
         // Show signup form, hide login
         signupForm.hidden = false;
@@ -73,7 +73,7 @@
         link.textContent = 'Log In here';
         link.addEventListener('click', (e) => { e.preventDefault(); switchTab('login'); });
         authFooter.appendChild(link);
-        document.title = 'EarnCampus - Sign Up';
+        document.title = 'EarnKampus - Sign Up';
       }
     }
 
@@ -85,10 +85,10 @@
       const input = document.getElementById(inputId);
       if (input.type === 'password') {
         input.type = 'text';
-        btn.textContent = '🙈';
+        btn.textContent = 'Hide';
       } else {
         input.type = 'password';
-        btn.textContent = '👁️';
+        btn.textContent = 'Show';
       }
     }
 
@@ -112,7 +112,7 @@
       const toast = document.createElement('div');
       toast.className = 'toast';
       const icon = document.createElement('span');
-      icon.textContent = 'ℹ️';
+      icon.textContent = '';
       const text = document.createElement('span');
       text.textContent = message; // textContent — not innerHTML (V8)
       toast.appendChild(icon);

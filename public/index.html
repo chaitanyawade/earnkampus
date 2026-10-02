@@ -1,11 +1,11 @@
-<!-- deployment -->
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EarnCampus - Campus Micro-Tasks</title>
+  <title>EarnKampus - Campus Micro-Tasks</title>
+  <meta name="theme-color" content="#6d28d9">
   <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -13,78 +13,85 @@
   <div class="app-container">
     <header class="navbar">
       <div class="brand">
-        <h1>EarnCampus</h1>
-        <span class="subtext">Campus Task Platform</span>
+        <h1>EarnKampus</h1>
+        <span class="subtext">Campus task platform</span>
       </div>
 
       <div class="header-right">
-        <a href="profile.html" class="user-box" id="userPill" style="text-decoration: none; color: inherit; cursor: pointer;" title="View Profile & Location">
-          <span id="currentAvatar">👤</span>
-          <span id="userNameDisplay">Guest</span>
-        </a>
+        <button class="btn btn-black" id="openComposerBtn">+ Create post</button>
 
         <button class="btn btn-outline" id="navMessagesBtn" style="display: none;">
-          💬 Messages <span id="unreadBadge" class="unread-pill" style="display:none;">0</span>
+          Messages <span id="unreadBadge" class="unread-pill" style="display:none;">0</span>
         </button>
-        <a href="auth.html" class="btn btn-outline nav-auth-link" id="navLoginBtn">Log In</a>
-        <a href="auth.html" class="btn btn-black nav-auth-link" id="navSignupBtn">Sign Up</a>
-        <button class="btn btn-outline" id="navLogoutBtn" style="display: none;">Log Out</button>
-        <button class="btn btn-black" id="openComposerBtn">+ Create Post</button>
+        <a href="auth.html" class="btn btn-outline nav-auth-link" id="navLoginBtn">Log in</a>
+        <a href="auth.html" class="btn btn-black nav-auth-link" id="navSignupBtn">Sign up</a>
+
+        <a href="profile.html" class="user-box" id="userPill" title="View your profile">
+          <span id="currentAvatar"></span>
+          <span id="userNameDisplay">Guest</span>
+        </a>
+        <button class="btn btn-outline" id="navLogoutBtn" style="display: none;">Log out</button>
       </div>
     </header>
 
-    <div class="tabs">
-      <button class="tab-item active" data-tab="need" id="tabNeed">I Need Help</button>
-      <button class="tab-item" data-tab="offer" id="tabOffer">I Offer Services</button>
-      <button class="tab-item" data-tab="mine" id="tabMine">📋 My Tasks</button>
-    </div>
+    <nav class="tabs" aria-label="Task feed">
+      <button class="tab-item active" data-tab="need" id="tabNeed">Help needed</button>
+      <button class="tab-item" data-tab="offer" id="tabOffer">Services offered</button>
+      <button class="tab-item" data-tab="mine" id="tabMine">My tasks</button>
+    </nav>
 
     <div class="filter-row">
       <div class="search-box">
-        <input type="text" id="searchInput" placeholder="Search tasks...">
-        <button id="clearSearchBtn" hidden>&times;</button>
+        <input type="text" id="searchInput" placeholder="Search tasks" aria-label="Search tasks">
+        <button id="clearSearchBtn" hidden aria-label="Clear search">&times;</button>
       </div>
 
       <div class="select-group">
-        <select id="categoryFilter">
-          <option value="All Categories">All Categories</option>
+        <select id="categoryFilter" aria-label="Category">
+          <option value="All Categories">All categories</option>
           <option value="Delivery">Delivery</option>
           <option value="Tutoring">Tutoring</option>
           <option value="Printing">Printing</option>
           <option value="Equipment">Equipment</option>
-          <option value="Physical">Physical Help</option>
+          <option value="Physical">Physical help</option>
           <option value="Other">Other</option>
         </select>
       </div>
     </div>
 
     <div class="feed-header">
-      <h2 id="feedHeading">Help wanted</h2>
+      <h2 id="feedHeading" class="sr-only">Help needed</h2>
       <span id="feedCountBadge">0 tasks</span>
     </div>
 
     <div class="posts-grid" id="postsGrid"></div>
   </div>
 
+  <!-- Create / edit post -->
   <div class="modal-overlay" id="composerModal" hidden>
     <div class="modal-box">
       <div class="modal-header">
-        <h3 id="modalTitle">Create Task Post</h3>
-        <button class="close-btn" id="closeComposerBtn">&times;</button>
+        <h3 id="modalTitle">Create task post</h3>
+        <button class="close-btn" id="closeComposerBtn" aria-label="Close">&times;</button>
       </div>
 
       <form id="postForm">
-        <div class="field">
-          <label>Post Type</label>
+        <div class="field" id="postTypeField">
+          <label>I want to</label>
           <div class="radio-group">
-            <label><input type="radio" name="postType" value="need" checked> I Need Help</label>
-            <label><input type="radio" name="postType" value="offer"> I Offer Service</label>
+            <label><input type="radio" name="postType" value="need" checked> Get help</label>
+            <label><input type="radio" name="postType" value="offer"> Offer a service</label>
           </div>
         </div>
 
         <div class="field">
           <label for="postTitleInput">Title</label>
-          <input type="text" id="postTitleInput" required placeholder="Enter task title">
+          <input type="text" id="postTitleInput" required placeholder="e.g. Print and collect 20 pages" maxlength="120">
+        </div>
+
+        <div class="field">
+          <label for="postDetailsInput">Details</label>
+          <textarea id="postDetailsInput" rows="3" required placeholder="Where, when, and anything the volunteer should know"></textarea>
         </div>
 
         <div class="field-row">
@@ -95,13 +102,13 @@
               <option value="Tutoring">Tutoring</option>
               <option value="Printing">Printing</option>
               <option value="Equipment">Equipment</option>
-              <option value="Physical">Physical Help</option>
+              <option value="Physical">Physical help</option>
               <option value="Other">Other</option>
             </select>
           </div>
 
           <div class="field">
-            <label for="postPriceInput">Reward per volunteer (₹)</label>
+            <label for="postPriceInput">Reward per volunteer (&#8377;)</label>
             <input type="number" id="postPriceInput" min="0" value="100" required>
           </div>
 
@@ -111,58 +118,46 @@
           </div>
         </div>
 
-        <div class="field">
-          <label for="postDetailsInput">Details</label>
-          <textarea id="postDetailsInput" rows="3" required placeholder="Enter description"></textarea>
-        </div>
+        <p class="field-help" id="postModeNote" hidden></p>
+        <p class="field-help">You pay each volunteer directly. EarnKampus does not handle payments.</p>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" id="cancelComposerBtn">Cancel</button>
-          <button type="submit" class="btn btn-black">Publish Post</button>
+          <button type="submit" class="btn btn-black" id="postSubmitBtn">Publish post</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Auth / Login Required Modal for Guests -->
+  <!-- Login required (guests) -->
   <div class="modal-overlay" id="authRequiredModal" hidden>
-    <div class="modal-box" style="max-width: 400px; text-align: center;">
-      <div class="modal-header" style="justify-content: center; position: relative;">
-        <h3>🔒 Login Required</h3>
-        <button class="close-btn" id="closeAuthReqBtn" style="position: absolute; right: 0;">&times;</button>
+    <div class="modal-box" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 id="authReqTitle">Log in required</h3>
+        <button class="close-btn" id="closeAuthReqBtn" aria-label="Close">&times;</button>
       </div>
-      <div style="padding: 16px 0; display: flex; flex-direction: column; gap: 12px; align-items: center;">
-        <span style="font-size: 40px;">🔐</span>
-        <h4 style="font-weight: 700; font-size: 16px;" id="authReqTitle">Authentication Required</h4>
-        <p style="font-size: 13.5px; color: var(--muted);" id="authReqText">You must be logged in to create task posts or offer help on EarnCampus.</p>
-        <div style="display: flex; gap: 10px; margin-top: 10px; width: 100%;">
-          <a href="auth.html" class="btn btn-outline" style="flex: 1;">Log In</a>
-          <a href="auth.html" class="btn btn-black" style="flex: 1;">Sign Up</a>
-        </div>
+      <p style="font-size: 14px; color: var(--muted);" id="authReqText">You must be logged in to create task posts or offer help on EarnKampus.</p>
+      <div style="display: flex; gap: 10px;">
+        <a href="auth.html" class="btn btn-outline" style="flex: 1;">Log in</a>
+        <a href="auth.html" class="btn btn-black" style="flex: 1;">Sign up</a>
       </div>
     </div>
   </div>
 
-  <!-- Campus Direct Messaging Modal / Drawer -->
+  <!-- Messages -->
   <div class="modal-overlay" id="messagesModal" hidden>
     <div class="modal-box chat-modal-box">
       <div class="modal-header">
-        <h3 style="display: flex; align-items: center; gap: 8px;">
-          <span>💬 Campus Messages</span>
-        </h3>
-        <button class="close-btn" id="closeMessagesBtn">&times;</button>
+        <h3>Messages</h3>
+        <button class="close-btn" id="closeMessagesBtn" aria-label="Close">&times;</button>
       </div>
 
       <div class="chat-container">
-        <!-- Contacts Sidebar -->
         <div class="chat-contacts">
           <div class="chat-contacts-header">Conversations</div>
-          <div class="contacts-list" id="contactsList">
-            <!-- Dynamically rendered contacts -->
-          </div>
+          <div class="contacts-list" id="contactsList"></div>
         </div>
 
-        <!-- Chat Thread Area -->
         <div class="chat-main">
           <div class="chat-thread-header" id="chatThreadHeader">
             <span id="chatActiveUser">Select a student to message</span>
@@ -170,14 +165,13 @@
 
           <div class="chat-messages-body" id="chatMessagesBody">
             <div class="empty-chat-state">
-              <span style="font-size: 32px;">💬</span>
-              <p style="font-size: 13.5px; color: var(--muted);">Select a conversation or click "Message Author" on any post card to start chatting!</p>
+              <p style="font-size: 14px; color: var(--muted);">Select a conversation, or press Message on a post to start chatting.</p>
             </div>
           </div>
 
           <form id="sendMessageForm" class="chat-input-area" hidden>
-            <input type="text" id="chatInputText" placeholder="Type a message..." required autocomplete="off">
-            <button type="submit" class="btn btn-black">Send 📤</button>
+            <input type="text" id="chatInputText" placeholder="Type a message" required autocomplete="off">
+            <button type="submit" class="btn btn-black">Send</button>
           </form>
         </div>
       </div>

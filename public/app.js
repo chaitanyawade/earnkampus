@@ -3,7 +3,7 @@
 const API_BASE = '/api';
 
 /**
- * EarnCampus Frontend — app.js
+ * EarnKampus Frontend — app.js
  *
  * Authentication model:
  * - The session cookie (set by the server) is the source of truth.
@@ -21,7 +21,7 @@ let currentState = {
     id: null,
     name: 'Guest',
     college: null,
-    avatar: '👤',
+    avatar: '',
     isLoggedIn: false,
   },
   posts: [],
@@ -67,7 +67,7 @@ function applyUIHint() {
           name: parsed.name,
           email: parsed.email || '',
           college: parsed.college || null,
-          avatar: parsed.avatar || '🎓',
+          avatar: parsed.avatar || '',
           isLoggedIn: true, // tentative — will be confirmed by verifySession()
         };
       }
@@ -112,7 +112,7 @@ function clearUserSession() {
     id: null,
     name: 'Guest',
     college: null,
-    avatar: '👤',
+    avatar: '',
     isLoggedIn: false,
   };
   updateUserUI();
@@ -126,8 +126,13 @@ function updateUserUI() {
   const logoutBtn = document.getElementById('navLogoutBtn');
   const messagesBtn = document.getElementById('navMessagesBtn');
 
-  if (avatarEl) avatarEl.textContent = currentState.currentUser.avatar || '👤';
-  if (nameEl) nameEl.textContent = currentState.currentUser.name || 'Guest';
+  const pill = document.getElementById('userPill');
+  const shownName = currentState.currentUser.name || 'Guest';
+  if (nameEl) nameEl.textContent = shownName;
+  if (pill) {
+    pill.dataset.initial = shownName.charAt(0).toUpperCase();
+    pill.style.display = currentState.currentUser.isLoggedIn ? 'inline-flex' : 'none';
+  }
 
   if (currentState.currentUser.isLoggedIn) {
     if (loginBtn) loginBtn.style.display = 'none';
@@ -232,7 +237,7 @@ function setupEventListeners() {
     userPill.addEventListener('click', (e) => {
       if (!currentState.currentUser.isLoggedIn) {
         e.preventDefault();
-        window.location.href = 'login.html';
+        window.location.href = 'auth.html?tab=login';
       }
     });
   }
@@ -259,7 +264,7 @@ function setupEventListeners() {
 function showAuthRequiredModal(message) {
   const modal = document.getElementById('authRequiredModal');
   const textEl = document.getElementById('authReqText');
-  if (textEl) textEl.textContent = message || 'You must be logged in to post tasks or offer help on EarnCampus.';
+  if (textEl) textEl.textContent = message || 'You must be logged in to post tasks or offer help on EarnKampus.';
   if (modal) modal.hidden = false;
 }
 
@@ -268,11 +273,14 @@ function closeAuthRequiredModal() {
   if (modal) modal.hidden = true;
 }
 
+let editingPostId = null; // set while the composer is editing an existing post
+
 function openComposerModal() {
   if (!currentState.currentUser.isLoggedIn) {
     showAuthRequiredModal('You must be logged in to create a new task post.');
     return;
   }
+  resetComposerMode();
   const modal = document.getElementById('composerModal');
   if (modal) modal.hidden = false;
 }
@@ -282,6 +290,85 @@ function closeComposerModal() {
   const form = document.getElementById('postForm');
   if (modal) modal.hidden = true;
   if (form) form.reset();
+  resetComposerMode();
+}
+
+/** Put the composer back into "create a new post" mode. */
+function resetComposerMode() {
+  editingPostId = null;
+  const set = (id, fn) => { const el = document.getElementById(id); if (el) fn(el); };
+  set('modalTitle', el => { el.textContent = 'Create task post'; });
+  set('postSubmitBtn', el => { el.textContent = 'Publish post'; });
+  set('postTypeField', el => { el.hidden = false; });
+  set('postCategorySelect', el => { el.disabled = false; });
+  set('postPriceInput', el => { el.disabled = false; });
+  set('postSlotsInput', el => { el.min = '1'; });
+  set('postModeNote', el => { el.hidden = true; el.textContent = ''; });
+}
+
+/** Open the composer pre-filled with an existing post. */
+function openEditModal(p) {
+  if (!currentState.currentUser.isLoggedIn) return;
+  const assigned = (p.assignees || []).length;
+  const locked = assigned > 0; // price/category are fixed once volunteers have agreed to them
+
+  editingPostId = p.id;
+  document.getElementById('modalTitle').textContent = 'Edit post';
+  document.getElementById('postSubmitBtn').textContent = 'Save changes';
+  document.getElementById('postTypeField').hidden = true;
+  document.getElementById('postTitleInput').value = p.title || '';
+  document.getElementById('postDetailsInput').value = p.details || '';
+  document.getElementById('postCategorySelect').value = p.category || 'Other';
+  document.getElementById('postPriceInput').value = p.price;
+  document.getElementById('postSlotsInput').value = p.slotsNeeded || 1;
+  document.getElementById('postSlotsInput').min = String(Math.max(1, assigned));
+  document.getElementById('postCategorySelect').disabled = locked;
+  document.getElementById('postPriceInput').disabled = locked;
+
+  const note = document.getElementById('postModeNote');
+  if (locked) {
+    note.textContent = 'Volunteers are already assigned, so the reward and category are locked. You can still update the title and details, or increase the number of volunteers.';
+  } else if ((p.interestedUsers || []).length) {
+    note.textContent = 'If you change the reward, current offers are cleared so volunteers can offer again at the new amount.';
+  } else {
+    note.textContent = '';
+  }
+  note.hidden = !note.textContent;
+
+  document.getElementById('composerModal').hidden = false;
+}
+
+async function submitPostEdit() {
+  const body = {
+    title: document.getElementById('postTitleInput').value,
+    details: document.getElementById('postDetailsInput').value,
+    slotsNeeded: document.getElementById('postSlotsInput').value,
+  };
+  const catEl = document.getElementById('postCategorySelect');
+  const priceEl = document.getElementById('postPriceInput');
+  if (!catEl.disabled) body.category = catEl.value;
+  if (!priceEl.disabled) body.price = priceEl.value;
+  if (!body.title.trim()) { showToast('Title is required.', 'error'); return; }
+
+  try {
+    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(editingPostId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    });
+    if (res.status === 401) { clearUserSession(); showAuthRequiredModal('Your session expired. Please log in again.'); return; }
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || 'Post updated.', 'success');
+      closeComposerModal();
+      await fetchPosts();
+    } else {
+      showToast(data.error || 'Could not update the post.', 'error');
+    }
+  } catch (err) {
+    showToast('Network error. Please try again.', 'error');
+  }
 }
 
 // ── Messaging ──────────────────────────────────────────────────────────────────
@@ -378,14 +465,14 @@ function getContactsList() {
     const otherId = m.senderId === currentState.currentUser.id ? m.receiverId : m.senderId;
     const otherName = m.senderId === currentState.currentUser.id ? m.receiverName : m.senderName;
     if (otherId && otherId !== currentState.currentUser.id && !map.has(otherId)) {
-      map.set(otherId, { id: otherId, name: otherName, avatar: '👤' });
+      map.set(otherId, { id: otherId, name: otherName, avatar: '' });
     }
   });
 
   // Also include users from current posts (for "Message" button on post cards)
   currentState.posts.forEach(p => {
     if (p.authorId && p.authorId !== currentState.currentUser.id && !map.has(p.authorId)) {
-      map.set(p.authorId, { id: p.authorId, name: p.author, avatar: '👤' });
+      map.set(p.authorId, { id: p.authorId, name: p.author, avatar: '' });
     }
   });
 
@@ -407,7 +494,7 @@ function renderContactsList(selectedUserId = null) {
 
     const avatarSpan = document.createElement('span');
     avatarSpan.className = 'contact-avatar';
-    avatarSpan.textContent = c.avatar || '👤';
+    avatarSpan.textContent = c.avatar || '';
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'contact-info';
@@ -447,14 +534,10 @@ function renderChatThread() {
     body.textContent = '';
     const state = document.createElement('div');
     state.className = 'empty-chat-state';
-    const icon = document.createElement('span');
-    icon.style.fontSize = '32px';
-    icon.textContent = '💬';
     const txt = document.createElement('p');
     txt.style.fontSize = '13px';
     txt.style.color = 'var(--muted)';
     txt.textContent = 'Select a student from the left sidebar to view messages.';
-    state.appendChild(icon);
     state.appendChild(txt);
     body.appendChild(state);
     return;
@@ -470,14 +553,10 @@ function renderChatThread() {
   if (threadMsgs.length === 0) {
     const state = document.createElement('div');
     state.className = 'empty-chat-state';
-    const icon = document.createElement('span');
-    icon.style.fontSize = '28px';
-    icon.textContent = '👋';
     const txt = document.createElement('p');
     txt.style.fontSize = '13px';
     txt.style.color = 'var(--muted)';
     txt.textContent = `No messages yet with ${currentState.activeChatUser.name}. Send a message to start!`;
-    state.appendChild(icon);
     state.appendChild(txt);
     body.appendChild(state);
     return;
@@ -664,16 +743,16 @@ function renderPosts() {
 
   postsGrid.textContent = '';
   if (countBadge) {
-    countBadge.textContent = `${currentState.posts.length} ${currentState.posts.length === 1 ? 'task' : 'tasks'}`;
+    const n = currentState.posts.length;
+    const u = currentState.currentUser;
+    const scope = (currentState.currentTab !== 'mine' && u.isLoggedIn && u.college) ? ` \u00b7 ${u.college}` : '';
+    countBadge.textContent = `${n} ${n === 1 ? 'task' : 'tasks'}${scope}`;
   }
 
   if (currentState.posts.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'loading-spinner';
     const mineTab = currentState.currentTab === 'mine';
-    const icon = document.createElement('span');
-    icon.style.fontSize = '32px';
-    icon.textContent = '📭';
     const t1 = document.createElement('span');
     t1.style.cssText = 'font-weight:700;color:var(--ink)';
     const guest = !currentState.currentUser.isLoggedIn;
@@ -682,8 +761,7 @@ function renderPosts() {
     t2.style.fontSize = '13px';
     t2.textContent = mineTab
       ? 'Tasks you post or help with will appear here, including finished ones.'
-      : (guest ? 'EarnCampus shows tasks from your own college. Log in with your college email to see them.' : 'Be the first to create a post in this category!');
-    empty.appendChild(icon);
+      : (guest ? 'EarnKampus shows tasks from your own college. Log in with your college email to see them.' : 'Be the first to create a post in this category!');
     empty.appendChild(t1);
     empty.appendChild(t2);
     postsGrid.appendChild(empty);
@@ -705,53 +783,9 @@ function buildPostCard(p) {
   const card = document.createElement('div');
   card.className = 'post-card';
 
-  // Card top — use DOM, not innerHTML for user data (V8)
+  // Header: category + status on the left, reward on the right (DOM, never innerHTML: V8)
   const cardTop = document.createElement('div');
   cardTop.className = 'card-top';
-
-  const authorLink = document.createElement('a');
-  authorLink.href = `profile.html?id=${encodeURIComponent(p.authorId)}`;
-  authorLink.className = 'author-info';
-  authorLink.style.cssText = 'text-decoration:none;color:inherit;cursor:pointer;';
-  authorLink.title = `View ${p.author}'s Profile`;
-
-  const authorAvatar = document.createElement('div');
-  authorAvatar.className = 'author-avatar';
-  authorAvatar.textContent = '👤';
-
-  const authorMeta = document.createElement('div');
-  authorMeta.className = 'author-meta';
-
-  const authorName = document.createElement('span');
-  authorName.className = 'author-name';
-  authorName.style.textDecoration = 'underline';
-  authorName.textContent = p.author || 'Unknown'; // textContent — no XSS (V8)
-
-  const authorCollege = document.createElement('span');
-  authorCollege.className = 'author-college';
-  authorCollege.textContent = `🎓 ${p.college || 'Campus'}`;
-
-  const authorRating = document.createElement('span');
-  authorRating.className = 'author-college';
-  authorRating.style.fontWeight = '600';
-  authorRating.textContent = ratingLabel(p.authorRatingAvg, p.authorRatingCount);
-
-  authorMeta.appendChild(authorName);
-  authorMeta.appendChild(authorCollege);
-  authorMeta.appendChild(authorRating);
-  authorLink.appendChild(authorAvatar);
-  authorLink.appendChild(authorMeta);
-
-  const pricePill = document.createElement('div');
-  pricePill.className = 'price-pill';
-  pricePill.textContent = (p.slotsNeeded || 1) > 1 ? `₹${p.price} each` : `₹${p.price}`;
-
-  cardTop.appendChild(authorLink);
-  cardTop.appendChild(pricePill);
-
-  // Card body
-  const cardBody = document.createElement('div');
-  cardBody.className = 'card-body';
 
   const cardTags = document.createElement('div');
   cardTags.className = 'card-tags';
@@ -766,43 +800,87 @@ function buildPostCard(p) {
 
   cardTags.appendChild(categoryBadge);
   cardTags.appendChild(statusBadge);
+  if (p.editedAt) {
+    const editedBadge = document.createElement('span');
+    editedBadge.className = 'tag-badge';
+    editedBadge.textContent = 'Edited';
+    cardTags.appendChild(editedBadge);
+  }
 
-  // Poster's rating, shown as its own badge so it is easy to spot on every card
-  const ratedBadge = document.createElement('span');
-  ratedBadge.className = 'tag-badge';
-  ratedBadge.style.cssText = 'font-weight:700;color:var(--accent);background:var(--accent-soft);box-shadow:none;';
-  ratedBadge.title = 'Rating of the person who posted this task';
-  ratedBadge.textContent = p.authorRatingCount
-    ? `⭐ ${Number(p.authorRatingAvg).toFixed(1)} · ${p.authorRatingCount} rated`
-    : '⭐ New (0 rated)';
-  cardTags.appendChild(ratedBadge);
+  const pricePill = document.createElement('div');
+  pricePill.className = 'price-pill';
+  pricePill.textContent = `₹${p.price}`;
+  if ((p.slotsNeeded || 1) > 1) {
+    const note = document.createElement('span');
+    note.className = 'price-note';
+    note.textContent = 'per volunteer';
+    pricePill.appendChild(note);
+  }
+
+  cardTop.appendChild(cardTags);
+  cardTop.appendChild(pricePill);
+
+  // Body: what the task is
+  const cardBody = document.createElement('div');
+  cardBody.className = 'card-body';
 
   const cardTitle = document.createElement('h3');
   cardTitle.className = 'card-title';
   cardTitle.textContent = p.title || ''; // textContent (V8)
-
-  const cardDetails = document.createElement('p');
-  cardDetails.className = 'card-details';
-  cardDetails.textContent = p.details || ''; // textContent (V8)
-
-  cardBody.appendChild(cardTags);
   cardBody.appendChild(cardTitle);
-  cardBody.appendChild(cardDetails);
+
+  if (p.details) {
+    const cardDetails = document.createElement('p');
+    cardDetails.className = 'card-details';
+    cardDetails.textContent = p.details; // textContent (V8)
+    cardBody.appendChild(cardDetails);
+  }
+
+  // Who posted it: name, college and lifetime rating
+  const authorRow = document.createElement('div');
+  authorRow.className = 'card-author';
+
+  const authorLink = document.createElement('a');
+  authorLink.href = `profile.html?id=${encodeURIComponent(p.authorId)}`;
+  authorLink.className = 'author-info';
+  authorLink.title = `View ${p.author}'s profile`;
+
+  const authorAvatar = document.createElement('div');
+  authorAvatar.className = 'author-avatar';
+  authorAvatar.textContent = (p.author || '?').charAt(0).toUpperCase();
+
+  const authorMeta = document.createElement('div');
+  authorMeta.className = 'author-meta';
+
+  const authorName = document.createElement('span');
+  authorName.className = 'author-name';
+  authorName.textContent = (p.author || 'Unknown') + (isAuthor ? ' (you)' : ''); // textContent (V8)
+
+  const authorSub = document.createElement('span');
+  authorSub.className = 'author-sub';
+  authorSub.textContent = `${p.college || 'Campus'} \u00b7 ${ratingLabel(p.authorRatingAvg, p.authorRatingCount)}`;
+
+  authorMeta.appendChild(authorName);
+  authorMeta.appendChild(authorSub);
+  authorLink.appendChild(authorAvatar);
+  authorLink.appendChild(authorMeta);
+  authorRow.appendChild(authorLink);
+
+  if (isAuthor && p.status !== 'completed') {
+    authorRow.appendChild(mkBtn('Edit', 'btn btn-outline', 'margin-left:auto;min-height:32px;padding:4px 14px;font-size:13px;', () => openEditModal(p)));
+  }
 
   card.appendChild(cardTop);
   card.appendChild(cardBody);
-
-  // Action footer
-  const actionContainer = buildPostActions(p, isAuthor, hasOffered, isAssignedToMe);
-  card.appendChild(actionContainer);
-
+  card.appendChild(authorRow);
+  card.appendChild(buildPostActions(p, isAuthor, hasOffered, isAssignedToMe));
   return card;
 }
 
-/** "⭐ 4.5 (12 ratings)" or "⭐ No ratings yet" */
+/** "4.5 (12 ratings)" or "No ratings yet" */
 function ratingLabel(avg, count) {
-  if (!count) return '⭐ No ratings yet';
-  return `⭐ ${Number(avg).toFixed(1)} (${count} ${count === 1 ? 'rating' : 'ratings'})`;
+  if (!count) return 'No ratings yet';
+  return `\u2605 ${Number(avg).toFixed(1)} (${count} ${count === 1 ? 'rating' : 'ratings'})`;
 }
 
 function mkBtn(text, cls, css, onClick) {
@@ -822,15 +900,15 @@ function mkBadge(text) {
 }
 
 const PAYMENT_LABELS = {
-  unpaid: '💰 Unpaid',
-  paid: '💸 Paid, awaiting confirmation',
-  confirmed: '✅ Payment confirmed',
+  unpaid: 'Unpaid',
+  paid: 'Paid, awaiting confirmation',
+  confirmed: 'Payment confirmed',
 };
 
 /** One volunteer's row: status, payment, and the actions that apply to the viewer. */
 function buildAssigneeRow(p, a, isAuthor) {
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;flex-direction:column;gap:8px;border-radius:13px;padding:10px;background:var(--surface);box-shadow:var(--inset);';
+  row.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;';
 
   const head = document.createElement('div');
   head.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;';
@@ -840,7 +918,7 @@ function buildAssigneeRow(p, a, isAuthor) {
   nameLink.textContent = a.name;
   head.appendChild(nameLink);
   head.appendChild(mkBadge(ratingLabel(a.ratingAvg, a.ratingCount)));
-  head.appendChild(mkBadge(a.status === 'completed' ? '✅ Work done' : '⚡ In progress'));
+  head.appendChild(mkBadge(a.status === 'completed' ? 'Work done' : 'In progress'));
   if (a.status === 'completed') head.appendChild(mkBadge(PAYMENT_LABELS[a.paymentStatus] || a.paymentStatus));
   row.appendChild(head);
 
@@ -849,27 +927,27 @@ function buildAssigneeRow(p, a, isAuthor) {
   const small = 'font-size:11px;padding:4px 8px;';
 
   if (isAuthor) {
-    btns.appendChild(mkBtn('💬 Chat', 'btn btn-outline', small, () => openMessagesModal({ id: a.userId, name: a.name }, p.title)));
+    btns.appendChild(mkBtn('Chat', 'btn btn-outline', small, () => openMessagesModal({ id: a.userId, name: a.name }, p.title)));
     if (a.status === 'assigned') {
-      btns.appendChild(mkBtn('✅ Mark done', 'btn btn-emerald', small, () => markCompleted(p.id, a.userId)));
-      btns.appendChild(mkBtn('🔄 Reassign', 'btn btn-outline', small, () => changeAssignment(p.id, 'reassign', a.userId, a.name)));
+      btns.appendChild(mkBtn('Mark done', 'btn btn-emerald', small, () => markCompleted(p.id, a.userId)));
+      btns.appendChild(mkBtn('Reassign', 'btn btn-outline', small, () => changeAssignment(p.id, 'reassign', a.userId, a.name)));
     } else {
       if (a.paymentStatus === 'unpaid') {
-        btns.appendChild(mkBtn(`💸 Mark ₹${p.price} paid`, 'btn btn-emerald', small, () => markPaid(p.id, a.userId, a.name, p.price)));
+        btns.appendChild(mkBtn(`Mark ₹${p.price} paid`, 'btn btn-emerald', small, () => markPaid(p.id, a.userId, a.name, p.price)));
       }
-      btns.appendChild(mkBtn('⭐ Rate', 'btn btn-black', small, () => openRatingModal(p.id, a.name, a.userId)));
+      btns.appendChild(mkBtn('Rate', 'btn btn-black', small, () => openRatingModal(p.id, a.name, a.userId)));
     }
-    btns.appendChild(mkBtn('🚩', 'btn btn-outline', small + 'color:var(--danger);', () => openReportModal(a.userId, a.name, p.id)));
+    btns.appendChild(mkBtn('Report', 'btn btn-outline', small + 'color:var(--danger);', () => openReportModal(a.userId, a.name, p.id)));
   } else {
     // viewer is this volunteer
-    btns.appendChild(mkBtn(`💬 Message ${p.author}`, 'btn btn-outline', small, () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
+    btns.appendChild(mkBtn(`Message ${p.author}`, 'btn btn-outline', small, () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
     if (a.status === 'assigned') {
-      btns.appendChild(mkBtn('↩ Withdraw', 'btn btn-outline', small, () => changeAssignment(p.id, 'withdraw')));
+      btns.appendChild(mkBtn('Withdraw', 'btn btn-outline', small, () => changeAssignment(p.id, 'withdraw')));
     } else {
       if (a.paymentStatus === 'paid') {
-        btns.appendChild(mkBtn('✅ Confirm payment received', 'btn btn-emerald', small, () => confirmPayment(p.id)));
+        btns.appendChild(mkBtn('Confirm payment received', 'btn btn-emerald', small, () => confirmPayment(p.id)));
       }
-      btns.appendChild(mkBtn(`⭐ Rate ${p.author}`, 'btn btn-black', small, () => openRatingModal(p.id, p.author)));
+      btns.appendChild(mkBtn(`Rate ${p.author}`, 'btn btn-black', small, () => openRatingModal(p.id, p.author)));
     }
   }
   row.appendChild(btns);
@@ -891,7 +969,7 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
   if (slots > 1 || assignees.length) {
     const prog = document.createElement('div');
     prog.style.cssText = 'font-size:12px;font-weight:700;';
-    prog.textContent = `👥 ${assignees.length}/${slots} volunteers assigned`;
+    prog.textContent = `${assignees.length}/${slots} volunteers assigned`;
     box.appendChild(prog);
   }
 
@@ -925,13 +1003,13 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
         userLink.href = `profile.html?id=${encodeURIComponent(u.userId)}`;
         userLink.style.cssText = 'text-decoration:underline;color:inherit;font-weight:700;';
         userLink.textContent = u.name; // textContent (V8)
-        offerLabel.textContent = '✋ ';
+        offerLabel.textContent = '';
         offerLabel.appendChild(userLink);
         offerLabel.appendChild(document.createTextNode(` offered help · ${ratingLabel(u.ratingAvg, u.ratingCount)}`));
 
         const btnGroup = document.createElement('div');
         btnGroup.style.cssText = 'display:flex;gap:4px;';
-        const msgBtn = mkBtn('💬', 'btn btn-outline', 'padding:3px 8px;font-size:11px;', () => openMessagesModal({ id: u.userId, name: u.name }, p.title));
+        const msgBtn = mkBtn('Message', 'btn btn-outline', 'padding:3px 8px;font-size:11px;', () => openMessagesModal({ id: u.userId, name: u.name }, p.title));
         msgBtn.title = `Message ${u.name}`;
         // Pass userId to server, not display name (V2)
         const acceptBtn = mkBtn('Accept & Assign', 'btn btn-emerald', 'padding:4px 8px;font-size:11px;', () => assignUser(p.id, u.userId));
@@ -956,7 +1034,7 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
     } else if (p.status === 'completed') {
       const done = document.createElement('div');
       done.className = 'assigned-box';
-      done.textContent = '✅ All volunteers finished';
+      done.textContent = 'All volunteers finished';
       box.appendChild(done);
     }
     return box;
@@ -969,16 +1047,16 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
     if (hasOffered) {
       const flexRow = document.createElement('div');
       flexRow.style.cssText = 'display:flex;gap:8px;align-items:center;width:100%;';
-      const offeredBtn = mkBtn('✅ You Offered Help', 'btn btn-secondary', 'flex:1;opacity:0.8;font-size:12px;', () => {});
+      const offeredBtn = mkBtn('You Offered Help', 'btn btn-secondary', 'flex:1;opacity:0.8;font-size:12px;', () => {});
       offeredBtn.disabled = true;
       flexRow.appendChild(offeredBtn);
-      flexRow.appendChild(mkBtn('💬 Message', 'btn btn-outline', 'font-size:12px;', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
+      flexRow.appendChild(mkBtn('Message', 'btn btn-outline', 'font-size:12px;', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
       box.appendChild(flexRow);
     } else {
       const flexRow = document.createElement('div');
       flexRow.style.cssText = 'display:flex;gap:8px;width:100%;';
-      const offerBtn = mkBtn(`🤝 ${p.type === 'need' ? 'Offer Help' : 'Request Service'}`, 'btn btn-primary', 'flex:1;', () => submitOffer(p.id));
-      const msgBtn = mkBtn('💬', 'btn btn-outline', '', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title));
+      const offerBtn = mkBtn(`${p.type === 'need' ? 'Offer Help' : 'Request Service'}`, 'btn btn-primary', 'flex:1;', () => submitOffer(p.id));
+      const msgBtn = mkBtn('Message', 'btn btn-outline', '', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title));
       msgBtn.title = `Message ${p.author}`;
       flexRow.appendChild(offerBtn);
       flexRow.appendChild(msgBtn);
@@ -987,13 +1065,13 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
   } else {
     const info = document.createElement('div');
     info.className = 'assigned-box';
-    info.textContent = p.status === 'completed' ? '✅ Completed' : '📌 Task in progress';
+    info.textContent = p.status === 'completed' ? 'Completed' : 'Task in progress';
     box.appendChild(info);
   }
 
   // Report the poster
   if (loggedIn) {
-    box.appendChild(mkBtn(`🚩 Report ${p.author}`, 'btn btn-outline',
+    box.appendChild(mkBtn(`Report ${p.author}`, 'btn btn-outline',
       'width:100%;font-size:11px;padding:4px;color:var(--danger);', () => openReportModal(p.authorId, p.author, p.id)));
   }
   return box;
@@ -1043,7 +1121,7 @@ function openTrustModal({ title, intro, withScore, categories, placeholder, subm
   if (withScore) {
     scoreSelect = document.createElement('select');
     scoreSelect.style.cssText = 'width:100%;';
-    [[5, '⭐⭐⭐⭐⭐  Excellent'], [4, '⭐⭐⭐⭐  Good'], [3, '⭐⭐⭐  Okay'], [2, '⭐⭐  Poor'], [1, '⭐  Bad']].forEach(([v, label]) => {
+    [[5, '5 - Excellent'], [4, '4 - Good'], [3, '3 - Okay'], [2, '2 - Poor'], [1, '1 - Bad']].forEach(([v, label]) => {
       const opt = document.createElement('option');
       opt.value = String(v);
       opt.textContent = label;
@@ -1104,18 +1182,18 @@ function openRatingModal(postId, personName, rateeId) {
 }
 
 const REPORT_CATEGORIES = [
-  ['scam', '💸 Scam / unfair money demand'],
-  ['no_show', '🚫 No-show / did not complete the task'],
-  ['harassment', '😡 Harassment or rude behaviour'],
-  ['fake_post', '🎭 Fake or misleading post'],
-  ['inappropriate', '⚠️ Inappropriate content'],
-  ['other', '❓ Other (please explain)'],
+  ['scam', 'Scam / unfair money demand'],
+  ['no_show', 'No-show / did not complete the task'],
+  ['harassment', 'Harassment or rude behaviour'],
+  ['fake_post', 'Fake or misleading post'],
+  ['inappropriate', 'Inappropriate content'],
+  ['other', 'Other (please explain)'],
 ];
 
 function openReportModal(targetUserId, personName, postId) {
   openTrustModal({
     title: `Report ${personName}`,
-    intro: 'Choose what went wrong. Reports are reviewed by the EarnCampus team.',
+    intro: 'Choose what went wrong. Reports are reviewed by the EarnKampus team.',
     withScore: false,
     categories: REPORT_CATEGORIES,
     placeholder: 'Add details (required if you chose "Other")',
@@ -1178,6 +1256,7 @@ async function handleCreatePost(e) {
     showAuthRequiredModal('You must be logged in to create a task post.');
     return;
   }
+  if (editingPostId) { return submitPostEdit(); }
 
   const typeRadios = document.getElementsByName('postType');
   let selectedType = 'need';
@@ -1366,19 +1445,9 @@ function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
 
-  const icon = document.createElement('span');
-  // Properly differentiate between different toast types
-  const iconMap = {
-    error: '⚠️',
-    success: '✅',
-    info: 'ℹ️',
-  };
-  icon.textContent = iconMap[type] || 'ℹ️';
-
   const msgSpan = document.createElement('span');
   msgSpan.textContent = message; // textContent — no XSS (V8)
 
-  toast.appendChild(icon);
   toast.appendChild(msgSpan);
   container.appendChild(toast);
 

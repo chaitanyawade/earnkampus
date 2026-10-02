@@ -1,5 +1,5 @@
 /**
- * EarnCampus API — Supabase (Postgres) edition
+ * EarnKampus API — Supabase (Postgres) edition
  *
  * Changes vs the in-memory version:
  * - All data lives in Supabase, so it survives restarts and works on Vercel.
@@ -128,16 +128,16 @@ const hashOtp = (emailKey, code) => crypto.createHmac('sha256', JWT_SECRET).upda
 const newOtp = () => String(crypto.randomInt(100000, 1000000));
 
 async function sendOtpEmail(to, code, purpose = 'verify') {
-  if (!mailer) { console.log(`[EarnCampus DEV] ${purpose} code for ${to}: ${code}`); return; }
+  if (!mailer) { console.log(`[EarnKampus DEV] ${purpose} code for ${to}: ${code}`); return; }
   const isReset = purpose === 'reset';
-  const subject = isReset ? 'Reset your EarnCampus password' : 'Your EarnCampus verification code';
-  const intro = isReset ? 'Use this code to reset your EarnCampus password:' : 'Your verification code is:';
+  const subject = isReset ? 'Reset your EarnKampus password' : 'Your EarnKampus verification code';
+  const intro = isReset ? 'Use this code to reset your EarnKampus password:' : 'Your verification code is:';
   await mailer.sendMail({
-    from: `"EarnCampus" <${MAIL_USER}>`,
+    from: `"EarnKampus" <${MAIL_USER}>`,
     to,
     subject,
     text: `${intro} ${code}. It expires in 10 minutes. If you did not request this, ignore this email.`,
-    html: `<div style="font-family:sans-serif;max-width:420px"><h2>EarnCampus</h2><p>${intro}</p><p style="font-size:32px;font-weight:800;letter-spacing:6px">${code}</p><p style="color:#666">It expires in 10 minutes. If you did not request this, you can ignore this email and your password stays the same.</p></div>`,
+    html: `<div style="font-family:sans-serif;max-width:420px"><h2>EarnKampus</h2><p>${intro}</p><p style="font-size:32px;font-weight:800;letter-spacing:6px">${code}</p><p style="color:#666">It expires in 10 minutes. If you did not request this, you can ignore this email and your password stays the same.</p></div>`,
   });
 }
 
@@ -156,7 +156,7 @@ const sessionUser = u => ({ id: u.id, name: u.name, email: u.email, college: u.c
 const toPost = p => ({
   id: p.id, type: p.type, title: p.title, details: p.details, price: p.price,
   college: p.college, category: p.category,
-  authorId: p.author_id, author: p.author, status: p.status, createdAt: p.created_at,
+  authorId: p.author_id, author: p.author, status: p.status, createdAt: p.created_at, editedAt: p.edited_at || null,
   interestedUsers: p.interested_users || [],
   selectedUser: p.selected_user, selectedUserId: p.selected_user_id,
 });
@@ -293,7 +293,7 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
 
   const college = await collegeForEmail(cleanEmail);
   if (!college) {
-    return res.status(400).json({ success: false, error: 'EarnCampus is not open for this email domain yet. Please use your official college email.' });
+    return res.status(400).json({ success: false, error: 'EarnKampus is not open for this email domain yet. Please use your official college email.' });
   }
 
   const { data: existing, error: e1 } = await db.from('users').select('id').eq('email_canonical', emailKey).maybeSingle();
@@ -399,7 +399,7 @@ app.post('/api/auth/signup/verify', authLimiter, ah(async (req, res) => {
     email_canonical: emailKey,
     password_hash: pending.password_hash,
     college,
-    avatar: '🎓',
+    avatar: null,
   };
   const { error: e2 } = await db.from('users').insert(row);
   if (e2) {
@@ -761,6 +761,73 @@ app.post('/api/posts', requireAuth, ah(async (req, res) => {
   return res.status(201).json({ success: true, post: await postOut(data) });
 }));
 
+/**
+ * PUT /api/posts/:id — the author edits their own post.
+ *  - Completed posts are read-only.
+ *  - Once volunteers are assigned, reward and category are locked (they agreed to those),
+ *    but title, details and "volunteers needed" (never below the number assigned) can change.
+ *  - Changing the reward clears pending offers, so nobody is accepted at a price they did not see.
+ */
+app.put('/api/posts/:id', requireAuth, ah(async (req, res) => {
+  const post = await getPost(req.params.id);
+  if (!post) return res.status(404).json({ success: false, error: 'Post not found.' });
+  if (post.author_id !== req.user.id) return res.status(403).json({ success: false, error: 'You can only edit your own posts.' });
+  if (post.status === 'completed') return res.status(409).json({ success: false, error: 'Completed posts cannot be edited.' });
+
+  const asg = await getAssignments(post.id);
+  const locked = asg.length > 0;
+  const { title, details, category, price, slotsNeeded } = req.body;
+  const updates = {};
+
+  if (title !== undefined) {
+    const err = validateString(title, 'Title', LIMITS.title);
+    if (err) return res.status(400).json({ success: false, error: err });
+    updates.title = title.trim();
+  }
+  if (details !== undefined) {
+    const err = validateString(details, 'Details', LIMITS.details, false);
+    if (err) return res.status(400).json({ success: false, error: err });
+    updates.details = (details || '').trim();
+  }
+  if (category !== undefined) {
+    if (typeof category !== 'string' || !VALID_CATEGORIES.includes(category)) return res.status(400).json({ success: false, error: 'Invalid category.' });
+    if (locked && category !== post.category) return res.status(409).json({ success: false, error: 'Category cannot change after volunteers are assigned.' });
+    updates.category = category;
+  }
+  if (price !== undefined) {
+    const priceNum = Number(price);
+    if (!Number.isFinite(priceNum) || priceNum < 0 || priceNum > LIMITS.price.max) {
+      return res.status(400).json({ success: false, error: `Price must be a number between 0 and ${LIMITS.price.max}.` });
+    }
+    if (locked && Math.round(priceNum) !== post.price) return res.status(409).json({ success: false, error: 'The reward cannot change after volunteers are assigned.' });
+    updates.price = Math.round(priceNum);
+  }
+  if (slotsNeeded !== undefined) {
+    const slotsNum = Number(slotsNeeded);
+    if (!Number.isInteger(slotsNum) || slotsNum < 1 || slotsNum > MAX_SLOTS) {
+      return res.status(400).json({ success: false, error: `Volunteers needed must be a whole number from 1 to ${MAX_SLOTS}.` });
+    }
+    if (slotsNum < asg.length) return res.status(400).json({ success: false, error: `${asg.length} volunteer(s) are already assigned, so you need at least ${asg.length}.` });
+    updates.slots_needed = slotsNum;
+  }
+  if (!Object.keys(updates).length) return res.status(400).json({ success: false, error: 'Nothing to change.' });
+
+  const offersCleared = updates.price !== undefined && updates.price !== post.price && (post.interested_users || []).length > 0;
+  if (offersCleared) updates.interested_users = [];
+  updates.edited_at = new Date().toISOString();
+
+  const { error } = await db.from('posts').update(updates).eq('id', post.id).neq('status', 'completed');
+  if (error) throw error;
+
+  const fresh = await syncPostStatus(post.id); // a changed slot count can reopen or fill the post
+  return res.json({
+    success: true,
+    message: offersCleared ? 'Post updated. Earlier offers were cleared because the reward changed.' : 'Post updated.',
+    offersCleared,
+    post: await postOut(fresh),
+  });
+}));
+
 app.post('/api/posts/:id/offer', requireAuth, ah(async (req, res) => {
   const post = await getPost(req.params.id);
   if (!post) return res.status(404).json({ success: false, error: 'Post not found.' });
@@ -890,7 +957,7 @@ app.post('/api/posts/:id/withdraw', requireAuth, ah(async (req, res) => {
 }));
 
 /**
- * Payment ledger (no money moves through EarnCampus).
+ * Payment ledger (no money moves through EarnKampus).
  * Poster marks a volunteer paid after paying them directly (UPI/cash);
  * the volunteer then confirms they received it.
  */
