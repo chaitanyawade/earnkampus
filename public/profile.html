@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EarnCampus - User Profile</title>
+  <meta name="description" content="View a campus member's public profile on EarnCampus.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="app-container profile-container">
+    <header class="navbar">
+      <div class="brand">
+        <h1>EarnCampus</h1>
+        <span class="subtext" id="headerSubtext">Campus Student Profile</span>
+      </div>
+
+      <div class="header-right">
+        <a href="index.html" class="btn btn-outline">&larr; Back to Feed</a>
+        <button class="btn btn-black" id="logoutBtn" style="display:none;">Log Out</button>
+      </div>
+    </header>
+
+    <div class="profile-card">
+      <div class="profile-header">
+        <div class="profile-user-left">
+          <div class="avatar-large" id="profileAvatar">🎓</div>
+          <div class="profile-title-box">
+            <h2 id="profileName">Loading Profile...</h2>
+            <p id="profileSubtitle">Campus Member</p>
+          </div>
+        </div>
+
+        <div id="profileActionArea">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">College / Institution</span>
+          <span class="info-val" id="profileCollege">-</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">Rating</span>
+          <span class="info-val" id="profileRating">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+  </div>
+    <script src="profile.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,15 @@
+# Vercel Deployment Ignore File
+# These files/folders are not needed in the Vercel deployment
+
+# Local dev server (Vercel uses api/index.js directly as a serverless function)
+server.js
+
+# Node modules (Vercel installs these automatically from package.json)
+node_modules/
+
+# Lock files (optional but keeps deployment clean)
+package-lock.json
+
+# Local environment files
+.env.local
+.env
