@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#6d28d9">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="stylesheet" href="styles.css">
+  <script src="theme.js"></script>
 </head>
 
 <body>
@@ -22,13 +23,14 @@
       </a>
 
       <div class="header-right">
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode"></button>
         <button class="btn btn-black" id="openComposerBtn">+ Create post</button>
 
         <button class="btn btn-outline" id="navMessagesBtn" style="display: none;">
           Messages <span id="unreadBadge" class="unread-pill" style="display:none;">0</span>
         </button>
-        <a href="auth.html" class="btn btn-outline nav-auth-link" id="navLoginBtn">Log in</a>
-        <a href="auth.html" class="btn btn-black nav-auth-link" id="navSignupBtn">Sign up</a>
+        <a href="auth.html?tab=login" class="btn btn-outline nav-auth-link" id="navLoginBtn">Log in</a>
+        <a href="auth.html?tab=signup" class="btn btn-black nav-auth-link" id="navSignupBtn">Sign up</a>
 
         <a href="profile.html" class="user-box" id="userPill" title="View your profile">
           <span id="currentAvatar"></span>
@@ -81,10 +83,10 @@
 
       <form id="postForm">
         <div class="field" id="postTypeField">
-          <label>I want to</label>
-          <div class="radio-group">
-            <label><input type="radio" name="postType" value="need" checked> Get help</label>
-            <label><input type="radio" name="postType" value="offer"> Offer a service</label>
+          <label id="postTypeLabel">Post type</label>
+          <div class="radio-group" role="radiogroup" aria-labelledby="postTypeLabel">
+            <label><input type="radio" name="postType" value="need" checked><span>I need help</span></label>
+            <label><input type="radio" name="postType" value="offer"><span>I offer a service</span></label>
           </div>
         </div>
 

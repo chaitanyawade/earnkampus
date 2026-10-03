@@ -124,6 +124,21 @@ async function collegeForEmail(email) {
   return data[0].name;
 }
 
+/** Collapse extra spaces so "Rahul   Sharma " and "Rahul Sharma" are the same name. */
+const normalizeName = name => String(name || '').trim().replace(/\s+/g, ' ');
+
+/** Is this display name already used by someone else at the same college (ignoring letter case)? */
+async function nameTaken(college, name, exceptUserId) {
+  const pattern = name.replace(/[\\%_]/g, m => '\\' + m); // match the name literally, not as a wildcard
+  let q = db.from('users').select('id').eq('college', college).ilike('name', pattern).limit(1);
+  if (exceptUserId) q = q.neq('id', exceptUserId);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data.length > 0;
+}
+
+const NAME_TAKEN_MESSAGE = 'That name is already taken at your college. Add your surname or an initial so people can tell you apart.';
+
 const hashOtp = (emailKey, code) => crypto.createHmac('sha256', JWT_SECRET).update(`${emailKey}:${code}`).digest('hex');
 const newOtp = () => String(crypto.randomInt(100000, 1000000));
 
@@ -300,6 +315,10 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
   if (e1) throw e1;
   if (existing) return res.status(409).json({ success: false, error: 'An account with that email already exists. Please log in.' });
 
+  const cleanName = normalizeName(name);
+  if (cleanName.length < 2) return res.status(400).json({ success: false, error: 'Name must be at least 2 characters.' });
+  if (await nameTaken(college, cleanName)) return res.status(409).json({ success: false, error: NAME_TAKEN_MESSAGE });
+
   const { data: pending, error: e2 } = await db.from('email_otps').select('last_sent_at').eq('email_key', emailKey).maybeSingle();
   if (e2) throw e2;
   if (pending) {
@@ -311,7 +330,7 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
   const { error: e3 } = await db.from('email_otps').upsert({
     email_key: emailKey,
     email: cleanEmail,
-    name: name.trim().slice(0, LIMITS.name),
+    name: cleanName.slice(0, LIMITS.name),
     password_hash: await bcrypt.hash(password, BCRYPT_ROUNDS),
     code_hash: hashOtp(emailKey, code),
     expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
@@ -392,6 +411,8 @@ app.post('/api/auth/signup/verify', authLimiter, ah(async (req, res) => {
   const college = await collegeForEmail(pending.email);
   if (!college) return res.status(400).json({ success: false, error: 'This email domain is no longer supported.' });
 
+  if (await nameTaken(college, pending.name)) return res.status(409).json({ success: false, error: NAME_TAKEN_MESSAGE + ' Please start signup again.' });
+
   const row = {
     id: genId('u'),
     name: pending.name,
@@ -403,7 +424,10 @@ app.post('/api/auth/signup/verify', authLimiter, ah(async (req, res) => {
   };
   const { error: e2 } = await db.from('users').insert(row);
   if (e2) {
-    if (e2.code === '23505') return res.status(409).json({ success: false, error: 'An account with that email already exists. Please log in.' });
+    if (e2.code === '23505') {
+      const nameClash = /college_name/.test(`${e2.message} ${e2.details || ''}`);
+      return res.status(409).json({ success: false, error: nameClash ? NAME_TAKEN_MESSAGE + ' Please start signup again.' : 'An account with that email already exists. Please log in.' });
+    }
     throw e2;
   }
   await db.from('email_otps').delete().eq('email_key', emailKey);
@@ -518,8 +542,9 @@ const NAME_CHANGE_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 app.put('/api/auth/profile', requireAuth, ah(async (req, res) => {
   const nameErr = validateString(req.body.name, 'Name', LIMITS.name);
   if (nameErr) return res.status(400).json({ success: false, error: nameErr });
-  const name = req.body.name.trim();
+  const name = normalizeName(req.body.name);
   if (name.length < 2) return res.status(400).json({ success: false, error: 'Name must be at least 2 characters.' });
+  if (await nameTaken(req.user.college, name, req.user.id)) return res.status(409).json({ success: false, error: NAME_TAKEN_MESSAGE });
   if (name === req.user.name) return res.json({ success: true, user: sessionUser(req.user) });
 
   const { data: cur, error: e0 } = await db.from('users').select('name_changed_at').eq('id', req.user.id).maybeSingle();
