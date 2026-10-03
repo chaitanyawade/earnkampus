@@ -1694,3 +1694,11 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 300);
   }, 3500);
 }
+
+
+// If assets/logo.png is missing, hide the image instead of showing a broken icon
+document.querySelectorAll('.brand-logo').forEach(img => {
+  const hide = () => { img.style.display = 'none'; };
+  img.addEventListener('error', hide);
+  if (img.complete && img.naturalWidth === 0) hide();
+});

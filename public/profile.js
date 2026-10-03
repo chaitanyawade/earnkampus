@@ -241,3 +241,11 @@
         tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
       );
     }
+
+
+// If assets/logo.png is missing, hide the image instead of showing a broken icon
+document.querySelectorAll('.brand-logo').forEach(img => {
+  const hide = () => { img.style.display = 'none'; };
+  img.addEventListener('error', hide);
+  if (img.complete && img.naturalWidth === 0) hide();
+});

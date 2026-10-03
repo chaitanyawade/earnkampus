@@ -6,16 +6,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EarnKampus - Campus Micro-Tasks</title>
   <meta name="theme-color" content="#6d28d9">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 
 <body>
   <div class="app-container">
     <header class="navbar">
-      <div class="brand">
-        <h1>EarnKampus</h1>
-        <span class="subtext">Campus task platform</span>
-      </div>
+      <a class="brand" href="index.html" aria-label="EarnKampus home">
+        <img class="brand-logo" src="assets/logo.png" alt="" width="40" height="40">
+        <div class="brand-text">
+          <h1>EarnKampus</h1>
+          <span class="subtext">Campus task platform</span>
+        </div>
+      </a>
 
       <div class="header-right">
         <button class="btn btn-black" id="openComposerBtn">+ Create post</button>
@@ -108,18 +112,18 @@
           </div>
 
           <div class="field">
-            <label for="postPriceInput">Reward per volunteer (&#8377;)</label>
-            <input type="number" id="postPriceInput" min="0" value="100" required>
+            <label for="postPriceInput">Reward each (&#8377;)</label>
+            <input type="number" id="postPriceInput" min="0" value="100" inputmode="numeric" required>
           </div>
 
           <div class="field">
             <label for="postSlotsInput">Volunteers needed</label>
-            <input type="number" id="postSlotsInput" min="1" max="20" step="1" value="1" required>
+            <input type="number" id="postSlotsInput" min="1" max="20" step="1" value="1" inputmode="numeric" required>
           </div>
         </div>
 
         <p class="field-help" id="postModeNote" hidden></p>
-        <p class="field-help">You pay each volunteer directly. EarnKampus does not handle payments.</p>
+        <p class="field-help">The reward is paid per volunteer. You pay each volunteer directly; EarnKampus does not handle payments.</p>
 
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" id="cancelComposerBtn">Cancel</button>
