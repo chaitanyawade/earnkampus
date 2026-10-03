@@ -178,6 +178,20 @@
     </div>
   </div>
 
+  <!-- Full post (opened from "Read more...") -->
+  <div class="modal-overlay" id="postDetailModal" hidden>
+    <div class="modal-box detail-box" role="dialog" aria-modal="true" aria-labelledby="postDetailTitle">
+      <div class="modal-header">
+        <h3 id="postDetailTitle">Task details</h3>
+        <button class="close-btn" id="closePostDetailBtn" aria-label="Close">&times;</button>
+      </div>
+      <div class="detail-body" id="postDetailBody"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="postDetailCloseBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="app.js"></script>

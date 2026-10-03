@@ -772,6 +772,122 @@ function renderPosts() {
     const card = buildPostCard(p);
     postsGrid.appendChild(card);
   });
+  requestAnimationFrame(() => refreshClampToggles(postsGrid));
+}
+
+/** Show "Read more..." only on descriptions that are actually cut off. */
+function refreshClampToggles(root) {
+  (root || document).querySelectorAll('.card-details.is-clamped').forEach(el => {
+    const btn = el.nextElementSibling;
+    if (!btn || !btn.classList.contains('read-more')) return;
+    btn.hidden = !(el.scrollHeight > el.clientHeight + 1);
+  });
+}
+
+let clampResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(clampResizeTimer);
+  clampResizeTimer = setTimeout(() => refreshClampToggles(document), 150);
+});
+
+/** Opens the full post in a window; the page behind it is blurred. */
+function openPostDetail(p) {
+  const modal = document.getElementById('postDetailModal');
+  const body = document.getElementById('postDetailBody');
+  const titleEl = document.getElementById('postDetailTitle');
+  if (!modal || !body || !titleEl) return;
+
+  titleEl.textContent = p.title || 'Task details'; // textContent (V8)
+  body.textContent = '';
+
+  const top = document.createElement('div');
+  top.className = 'detail-top';
+  const tags = document.createElement('div');
+  tags.className = 'card-tags';
+  const addTag = (text, cls) => {
+    const t = document.createElement('span');
+    t.className = cls;
+    t.textContent = text;
+    tags.appendChild(t);
+  };
+  addTag(p.category || 'Other', 'tag-badge');
+  addTag((p.status || '').replace('_', ' '), `status-badge status-${p.status}`);
+  if ((p.slotsNeeded || 1) > 1) addTag(`${(p.assignees || []).length}/${p.slotsNeeded} filled`, 'tag-badge');
+  if (p.editedAt) addTag('Edited', 'tag-badge');
+
+  const price = document.createElement('div');
+  price.className = 'price-pill';
+  price.textContent = `\u20b9${p.price}`;
+  if ((p.slotsNeeded || 1) > 1) {
+    const note = document.createElement('span');
+    note.className = 'price-note';
+    note.textContent = 'per volunteer';
+    price.appendChild(note);
+  }
+  top.appendChild(tags);
+  top.appendChild(price);
+
+  const text = document.createElement('p');
+  text.className = 'detail-text';
+  text.textContent = p.details || 'No description provided.'; // textContent (V8)
+
+  const posted = document.createElement('p');
+  posted.className = 'card-date';
+  posted.textContent = 'Posted ' + new Date(p.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+
+  const authorRow = document.createElement('div');
+  authorRow.className = 'card-author';
+  const authorLink = document.createElement('a');
+  authorLink.href = `profile.html?id=${encodeURIComponent(p.authorId)}`;
+  authorLink.className = 'author-info';
+  const avatar = document.createElement('div');
+  avatar.className = 'author-avatar';
+  avatar.textContent = (p.author || '?').charAt(0).toUpperCase();
+  const meta = document.createElement('div');
+  meta.className = 'author-meta';
+  const name = document.createElement('span');
+  name.className = 'author-name';
+  name.textContent = p.author || 'Unknown';
+  const sub = document.createElement('span');
+  sub.className = 'author-sub';
+  sub.textContent = `${p.college || 'Campus'} \u00b7 ${ratingLabel(p.authorRatingAvg, p.authorRatingCount)}`;
+  meta.appendChild(name);
+  meta.appendChild(sub);
+  authorLink.appendChild(avatar);
+  authorLink.appendChild(meta);
+  authorRow.appendChild(authorLink);
+
+  body.appendChild(top);
+  body.appendChild(text);
+  body.appendChild(posted);
+  body.appendChild(authorRow);
+  modal.hidden = false;
+}
+
+(function setupPostDetailModal() {
+  const modal = document.getElementById('postDetailModal');
+  if (!modal) return;
+  const close = () => { modal.hidden = true; };
+  ['closePostDetailBtn', 'postDetailCloseBtn'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('click', close);
+  });
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.hidden) close(); });
+})();
+
+/** "just now", "5 min ago", "3 hr ago", "2 days ago", then a plain date. */
+function formatPostedDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} hr ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function buildPostCard(p) {
@@ -807,6 +923,13 @@ function buildPostCard(p) {
     cardTags.appendChild(editedBadge);
   }
 
+  if ((p.slotsNeeded || 1) > 1) {
+    const filledBadge = document.createElement('span');
+    filledBadge.className = 'tag-badge';
+    filledBadge.textContent = `${(p.assignees || []).length}/${p.slotsNeeded} filled`;
+    cardTags.appendChild(filledBadge);
+  }
+
   const pricePill = document.createElement('div');
   pricePill.className = 'price-pill';
   pricePill.textContent = `₹${p.price}`;
@@ -830,10 +953,31 @@ function buildPostCard(p) {
   cardBody.appendChild(cardTitle);
 
   if (p.details) {
+    // Long descriptions are cut to 3 lines; the full text opens in its own window
     const cardDetails = document.createElement('p');
-    cardDetails.className = 'card-details';
+    cardDetails.className = 'card-details is-clamped';
     cardDetails.textContent = p.details; // textContent (V8)
+
+    const readMore = document.createElement('button');
+    readMore.type = 'button';
+    readMore.className = 'read-more';
+    readMore.textContent = 'Read more...';
+    readMore.hidden = true; // revealed by refreshClampToggles() only when the text is cut off
+    readMore.addEventListener('click', () => openPostDetail(p));
+    cardDetails.addEventListener('click', () => { if (!readMore.hidden) openPostDetail(p); });
+
     cardBody.appendChild(cardDetails);
+    cardBody.appendChild(readMore);
+  }
+
+  const postedText = formatPostedDate(p.createdAt);
+  if (postedText) {
+    const posted = document.createElement('time');
+    posted.className = 'card-date';
+    posted.dateTime = p.createdAt;
+    posted.title = new Date(p.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+    posted.textContent = `Posted ${postedText}`;
+    cardBody.appendChild(posted);
   }
 
   // Who posted it: name, college and lifetime rating
@@ -866,9 +1010,19 @@ function buildPostCard(p) {
   authorLink.appendChild(authorMeta);
   authorRow.appendChild(authorLink);
 
-  if (isAuthor && p.status !== 'completed') {
-    authorRow.appendChild(mkBtn('Edit', 'btn btn-outline', 'margin-left:auto;min-height:32px;padding:4px 14px;font-size:13px;', () => openEditModal(p)));
+  const rowActions = document.createElement('div');
+  rowActions.className = 'card-author-actions';
+  if (isAuthor) {
+    if (p.status !== 'completed') {
+      rowActions.appendChild(mkBtn('Edit', 'btn btn-outline btn-sm', '', () => openEditModal(p)));
+    }
+    if (p.status === 'open' && !(p.assignees || []).length) {
+      rowActions.appendChild(buildMenu([{ label: 'Delete post', danger: true, onClick: () => deletePost(p.id) }]));
+    }
+  } else if (currentState.currentUser.isLoggedIn) {
+    rowActions.appendChild(mkBtn('Report', 'btn btn-outline btn-sm btn-quiet-danger', '', () => openReportModal(p.authorId, p.author, p.id)));
   }
+  if (rowActions.children.length) authorRow.appendChild(rowActions);
 
   card.appendChild(cardTop);
   card.appendChild(cardBody);
@@ -899,180 +1053,263 @@ function mkBadge(text) {
   return s;
 }
 
-const PAYMENT_LABELS = {
-  unpaid: 'Unpaid',
-  paid: 'Paid, awaiting confirmation',
-  confirmed: 'Payment confirmed',
-};
+const panelState = new Map(); // which dropdowns the user opened, kept across re-renders
 
-/** One volunteer's row: status, payment, and the actions that apply to the viewer. */
+/** Small coloured status label. tone: ok | warn | info */
+function buildChip(text, tone) {
+  const chip = document.createElement('span');
+  chip.className = `chip chip-${tone}`;
+  chip.textContent = text;
+  return chip;
+}
+
+/** Native dropdown section. Content scrolls inside it, so the card never grows with the list. */
+function buildCollapsible(stateKey, label, hint, children, defaultOpen) {
+  const details = document.createElement('details');
+  details.className = 'collapsible';
+  details.open = panelState.has(stateKey) ? panelState.get(stateKey) : defaultOpen;
+
+  const summary = document.createElement('summary');
+  const title = document.createElement('span');
+  title.className = 'collapsible-title';
+  title.textContent = label;
+  summary.appendChild(title);
+  if (hint) {
+    const meta = document.createElement('span');
+    meta.className = 'collapsible-meta';
+    meta.textContent = hint;
+    summary.appendChild(meta);
+  }
+  details.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'collapsible-body';
+  children.forEach(c => body.appendChild(c));
+  details.appendChild(body);
+
+  details.addEventListener('toggle', () => panelState.set(stateKey, details.open));
+  return details;
+}
+
+/** "More" dropdown for secondary actions. items: [{ label, onClick, danger }] */
+function buildMenu(items) {
+  const menu = document.createElement('details');
+  menu.className = 'menu';
+
+  const toggle = document.createElement('summary');
+  toggle.className = 'btn btn-outline btn-sm menu-toggle';
+  toggle.textContent = 'More';
+  toggle.setAttribute('aria-label', 'More actions');
+  menu.appendChild(toggle);
+
+  const list = document.createElement('div');
+  list.className = 'menu-list';
+  items.forEach(item => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'menu-item' + (item.danger ? ' menu-danger' : '');
+    b.textContent = item.label;
+    b.addEventListener('click', () => { menu.open = false; item.onClick(); });
+    list.appendChild(b);
+  });
+  menu.appendChild(list);
+  return menu;
+}
+
+// Close any open "More" menu when clicking elsewhere
+document.addEventListener('click', e => {
+  document.querySelectorAll('details.menu[open]').forEach(m => { if (!m.contains(e.target)) m.open = false; });
+});
+
+/** One label that says where this volunteer is in the task. */
+function volunteerStatus(a) {
+  if (a.status !== 'completed') return { text: 'In progress', tone: 'warn' };
+  if (a.paymentStatus === 'confirmed') return { text: 'Done, paid', tone: 'ok' };
+  if (a.paymentStatus === 'paid') return { text: 'Paid, awaiting confirmation', tone: 'info' };
+  return { text: 'Done, unpaid', tone: 'warn' };
+}
+
+/**
+ * One volunteer = one compact row: who, one status label, one main button, and a "More" menu.
+ * isAuthor: the poster managing a volunteer. Otherwise it is the volunteer's own row.
+ */
 function buildAssigneeRow(p, a, isAuthor) {
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;';
+  row.className = 'vol-row';
 
-  const head = document.createElement('div');
-  head.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;';
-  const nameLink = document.createElement('a');
-  nameLink.href = `profile.html?id=${encodeURIComponent(a.userId)}`;
-  nameLink.style.cssText = 'font-weight:700;color:inherit;text-decoration:underline;';
-  nameLink.textContent = a.name;
-  head.appendChild(nameLink);
-  head.appendChild(mkBadge(ratingLabel(a.ratingAvg, a.ratingCount)));
-  head.appendChild(mkBadge(a.status === 'completed' ? 'Work done' : 'In progress'));
-  if (a.status === 'completed') head.appendChild(mkBadge(PAYMENT_LABELS[a.paymentStatus] || a.paymentStatus));
-  row.appendChild(head);
+  const top = document.createElement('div');
+  top.className = 'vol-top';
 
-  const btns = document.createElement('div');
-  btns.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
-  const small = 'font-size:11px;padding:4px 8px;';
+  const who = document.createElement('div');
+  who.className = 'vol-who';
+  if (isAuthor) {
+    const nameLink = document.createElement('a');
+    nameLink.href = `profile.html?id=${encodeURIComponent(a.userId)}`;
+    nameLink.className = 'vol-name';
+    nameLink.textContent = a.name; // textContent (V8)
+    const rating = document.createElement('span');
+    rating.className = 'vol-rating';
+    rating.textContent = ratingLabel(a.ratingAvg, a.ratingCount);
+    who.appendChild(nameLink);
+    who.appendChild(rating);
+  } else {
+    const you = document.createElement('span');
+    you.className = 'vol-name';
+    you.textContent = 'You are assigned';
+    who.appendChild(you);
+  }
+  const status = volunteerStatus(a);
+  top.appendChild(who);
+  top.appendChild(buildChip(status.text, status.tone));
+  row.appendChild(top);
+
+  // Decide the single most useful next step; everything else goes under "More"
+  const other = isAuthor ? { id: a.userId, name: a.name } : { id: p.authorId, name: p.author };
+  const message = () => openMessagesModal({ id: other.id, name: other.name }, p.title);
+  const rate = () => openRatingModal(p.id, other.name, isAuthor ? a.userId : undefined);
+  let primary = null;
+  const menu = [];
 
   if (isAuthor) {
-    btns.appendChild(mkBtn('Chat', 'btn btn-outline', small, () => openMessagesModal({ id: a.userId, name: a.name }, p.title)));
     if (a.status === 'assigned') {
-      btns.appendChild(mkBtn('Mark done', 'btn btn-emerald', small, () => markCompleted(p.id, a.userId)));
-      btns.appendChild(mkBtn('Reassign', 'btn btn-outline', small, () => changeAssignment(p.id, 'reassign', a.userId, a.name)));
+      primary = mkBtn('Mark done', 'btn btn-black', '', () => markCompleted(p.id, a.userId));
+      menu.push({ label: 'Reassign', onClick: () => changeAssignment(p.id, 'reassign', a.userId, a.name) });
+    } else if (a.paymentStatus === 'unpaid') {
+      primary = mkBtn(`Mark \u20b9${p.price} paid`, 'btn btn-black', '', () => markPaid(p.id, a.userId, a.name, p.price));
+      menu.push({ label: `Rate ${a.name}`, onClick: rate });
     } else {
-      if (a.paymentStatus === 'unpaid') {
-        btns.appendChild(mkBtn(`Mark ₹${p.price} paid`, 'btn btn-emerald', small, () => markPaid(p.id, a.userId, a.name, p.price)));
-      }
-      btns.appendChild(mkBtn('Rate', 'btn btn-black', small, () => openRatingModal(p.id, a.name, a.userId)));
+      primary = mkBtn(`Rate ${a.name}`, 'btn btn-black', '', rate);
     }
-    btns.appendChild(mkBtn('Report', 'btn btn-outline', small + 'color:var(--danger);', () => openReportModal(a.userId, a.name, p.id)));
+    menu.push({ label: 'Message', onClick: message });
+    menu.push({ label: `Report ${a.name}`, danger: true, onClick: () => openReportModal(a.userId, a.name, p.id) });
   } else {
-    // viewer is this volunteer
-    btns.appendChild(mkBtn(`Message ${p.author}`, 'btn btn-outline', small, () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
     if (a.status === 'assigned') {
-      btns.appendChild(mkBtn('Withdraw', 'btn btn-outline', small, () => changeAssignment(p.id, 'withdraw')));
+      menu.push({ label: 'Withdraw from task', onClick: () => changeAssignment(p.id, 'withdraw') });
+    } else if (a.paymentStatus === 'paid') {
+      primary = mkBtn('Confirm payment received', 'btn btn-black', '', () => confirmPayment(p.id));
+      menu.push({ label: `Rate ${p.author}`, onClick: rate });
     } else {
-      if (a.paymentStatus === 'paid') {
-        btns.appendChild(mkBtn('Confirm payment received', 'btn btn-emerald', small, () => confirmPayment(p.id)));
-      }
-      btns.appendChild(mkBtn(`Rate ${p.author}`, 'btn btn-black', small, () => openRatingModal(p.id, p.author)));
+      primary = mkBtn(`Rate ${p.author}`, 'btn btn-black', '', rate);
     }
   }
-  row.appendChild(btns);
+  if (!primary) primary = mkBtn(`Message ${other.name}`, 'btn btn-outline', '', message);
+  else if (!isAuthor) menu.push({ label: 'Message poster', onClick: message });
+
+  const actions = document.createElement('div');
+  actions.className = 'vol-actions';
+  actions.appendChild(primary);
+  if (menu.length) actions.appendChild(buildMenu(menu));
+  row.appendChild(actions);
+  return row;
+}
+
+/** A pending offer: who, rating, and two buttons. */
+function buildOfferRow(p, u, isLatest) {
+  const row = document.createElement('div');
+  row.className = 'offer-row';
+
+  const info = document.createElement('div');
+  info.className = 'offer-info';
+  const nameLink = document.createElement('a');
+  nameLink.href = `profile.html?id=${encodeURIComponent(u.userId)}`;
+  nameLink.className = 'vol-name';
+  nameLink.textContent = u.name; // textContent (V8)
+  const rating = document.createElement('span');
+  rating.className = 'vol-rating';
+  rating.textContent = ratingLabel(u.ratingAvg, u.ratingCount);
+  info.appendChild(nameLink);
+  if (isLatest) info.appendChild(buildChip('Latest', 'info'));
+  info.appendChild(rating);
+
+  const actions = document.createElement('div');
+  actions.className = 'offer-actions';
+  actions.appendChild(mkBtn('Message', 'btn btn-outline btn-sm', '', () => openMessagesModal({ id: u.userId, name: u.name }, p.title)));
+  // Pass userId to server, not display name (V2)
+  actions.appendChild(mkBtn('Accept', 'btn btn-black btn-sm', '', () => assignUser(p.id, u.userId)));
+
+  row.appendChild(info);
+  row.appendChild(actions);
   return row;
 }
 
 function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
   const me = currentState.currentUser.id;
-  const loggedIn = currentState.currentUser.isLoggedIn;
   const assignees = p.assignees || [];
   const slots = p.slotsNeeded || 1;
   const openSlots = slots - assignees.length;
 
   const box = document.createElement('div');
   box.className = 'card-footer';
-  box.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
 
-  // Slot progress (only when it carries information)
-  if (slots > 1 || assignees.length) {
-    const prog = document.createElement('div');
-    prog.style.cssText = 'font-size:12px;font-weight:700;';
-    prog.textContent = `${assignees.length}/${slots} volunteers assigned`;
-    box.appendChild(prog);
-  }
-
-  // Volunteers panel: the poster sees everyone; a volunteer sees only their own row
-  const visible = isAuthor ? assignees : assignees.filter(a => a.userId === me);
-  visible.forEach(a => box.appendChild(buildAssigneeRow(p, a, isAuthor)));
-
+  // ── The poster ──
   if (isAuthor) {
-    // Start early with whoever has been accepted
-    if (p.status === 'open' && assignees.length > 0 && openSlots > 0) {
-      box.appendChild(mkBtn(`▶ Start with ${assignees.length} volunteer${assignees.length > 1 ? 's' : ''} (don't wait for ${openSlots} more)`,
-        'btn btn-outline', 'font-size:11px;padding:4px 8px;', () => startWithCurrent(p.id)));
+    if (assignees.length) {
+      const doneCount = assignees.filter(a => a.status === 'completed').length;
+      const hint = `${assignees.length} of ${slots} assigned` + (doneCount ? `, ${doneCount} done` : '');
+      box.appendChild(buildCollapsible(`${p.id}:team`, 'Volunteers', hint,
+        assignees.map(a => buildAssigneeRow(p, a, true)), assignees.length <= 2));
     }
 
-    // Offers waiting to be accepted
+    if (p.status === 'open' && assignees.length > 0 && openSlots > 0) {
+      box.appendChild(mkBtn(`Start with ${assignees.length} volunteer${assignees.length > 1 ? 's' : ''} now`,
+        'btn btn-outline btn-sm', '', () => startWithCurrent(p.id)));
+    }
+
+    // Offers: the newest stays on top; older ones tuck into a dropdown
     const offers = (p.interestedUsers || []).filter(u => !assignees.some(a => a.userId === u.userId));
     if (p.status === 'open' && offers.length > 0) {
-      const listDiv = document.createElement('div');
-      listDiv.className = 'offers-list';
-      const label = document.createElement('span');
-      label.style.cssText = 'font-size:12px;font-weight:700;color:var(--muted);';
-      label.textContent = `Volunteer offers (${openSlots} spot${openSlots === 1 ? '' : 's'} left)`;
-      listDiv.appendChild(label);
+      const block = document.createElement('div');
+      block.className = 'offers-block';
 
-      offers.forEach(u => {
-        const offerRow = document.createElement('div');
-        offerRow.className = 'offer-item';
+      const head = document.createElement('div');
+      head.className = 'offers-head';
+      const headTitle = document.createElement('span');
+      headTitle.textContent = 'Volunteer offers';
+      const headHint = document.createElement('span');
+      headHint.className = 'collapsible-meta';
+      headHint.textContent = `${openSlots} spot${openSlots === 1 ? '' : 's'} left`;
+      head.appendChild(headTitle);
+      head.appendChild(headHint);
+      block.appendChild(head);
 
-        const offerLabel = document.createElement('span');
-        const userLink = document.createElement('a');
-        userLink.href = `profile.html?id=${encodeURIComponent(u.userId)}`;
-        userLink.style.cssText = 'text-decoration:underline;color:inherit;font-weight:700;';
-        userLink.textContent = u.name; // textContent (V8)
-        offerLabel.textContent = '';
-        offerLabel.appendChild(userLink);
-        offerLabel.appendChild(document.createTextNode(` offered help · ${ratingLabel(u.ratingAvg, u.ratingCount)}`));
-
-        const btnGroup = document.createElement('div');
-        btnGroup.style.cssText = 'display:flex;gap:4px;';
-        const msgBtn = mkBtn('Message', 'btn btn-outline', 'padding:3px 8px;font-size:11px;', () => openMessagesModal({ id: u.userId, name: u.name }, p.title));
-        msgBtn.title = `Message ${u.name}`;
-        // Pass userId to server, not display name (V2)
-        const acceptBtn = mkBtn('Accept & Assign', 'btn btn-emerald', 'padding:4px 8px;font-size:11px;', () => assignUser(p.id, u.userId));
-        btnGroup.appendChild(msgBtn);
-        btnGroup.appendChild(acceptBtn);
-        offerRow.appendChild(offerLabel);
-        offerRow.appendChild(btnGroup);
-        listDiv.appendChild(offerRow);
-      });
-      box.appendChild(listDiv);
-    } else if (p.status === 'open') {
-      const flexRow = document.createElement('div');
-      flexRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
-      const waitText = document.createElement('span');
-      waitText.style.cssText = 'font-size:12.5px;color:var(--muted);';
-      waitText.textContent = assignees.length ? `Waiting for ${openSlots} more volunteer${openSlots === 1 ? '' : 's'}...` : 'Waiting for responses...';
-      flexRow.appendChild(waitText);
-      if (!assignees.length) {
-        flexRow.appendChild(mkBtn('Delete', 'btn btn-secondary', 'padding:6px 12px;font-size:12px;color:var(--danger);', () => deletePost(p.id)));
+      block.appendChild(buildOfferRow(p, offers[offers.length - 1], true));
+      const earlier = offers.slice(0, -1).reverse();
+      if (earlier.length) {
+        block.appendChild(buildCollapsible(`${p.id}:earlier`, `Earlier offers (${earlier.length})`, '',
+          earlier.map(u => buildOfferRow(p, u, false)), false));
       }
-      box.appendChild(flexRow);
-    } else if (p.status === 'completed') {
-      const done = document.createElement('div');
-      done.className = 'assigned-box';
-      done.textContent = 'All volunteers finished';
-      box.appendChild(done);
+      box.appendChild(block);
+    } else if (p.status === 'open') {
+      const wait = document.createElement('p');
+      wait.className = 'status-note';
+      wait.textContent = assignees.length
+        ? `Waiting for ${openSlots} more volunteer${openSlots === 1 ? '' : 's'}.`
+        : 'Waiting for volunteers to respond.';
+      box.appendChild(wait);
     }
     return box;
   }
 
-  // ── Not the poster ──
+  // ── Everyone else ──
   if (isAssignedToMe) {
-    // their own row is shown above; nothing else to add
+    assignees.filter(a => a.userId === me).forEach(a => box.appendChild(buildAssigneeRow(p, a, false)));
   } else if (p.status === 'open') {
+    const row = document.createElement('div');
+    row.className = 'footer-row';
     if (hasOffered) {
-      const flexRow = document.createElement('div');
-      flexRow.style.cssText = 'display:flex;gap:8px;align-items:center;width:100%;';
-      const offeredBtn = mkBtn('You Offered Help', 'btn btn-secondary', 'flex:1;opacity:0.8;font-size:12px;', () => {});
-      offeredBtn.disabled = true;
-      flexRow.appendChild(offeredBtn);
-      flexRow.appendChild(mkBtn('Message', 'btn btn-outline', 'font-size:12px;', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
-      box.appendChild(flexRow);
+      const sent = mkBtn('Offer sent', 'btn btn-outline', 'flex:1;', () => {});
+      sent.disabled = true;
+      row.appendChild(sent);
     } else {
-      const flexRow = document.createElement('div');
-      flexRow.style.cssText = 'display:flex;gap:8px;width:100%;';
-      const offerBtn = mkBtn(`${p.type === 'need' ? 'Offer Help' : 'Request Service'}`, 'btn btn-primary', 'flex:1;', () => submitOffer(p.id));
-      const msgBtn = mkBtn('Message', 'btn btn-outline', '', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title));
-      msgBtn.title = `Message ${p.author}`;
-      flexRow.appendChild(offerBtn);
-      flexRow.appendChild(msgBtn);
-      box.appendChild(flexRow);
+      row.appendChild(mkBtn(p.type === 'need' ? 'Offer help' : 'Request service', 'btn btn-black', 'flex:1;', () => submitOffer(p.id)));
     }
+    row.appendChild(mkBtn('Message', 'btn btn-outline', '', () => openMessagesModal({ id: p.authorId, name: p.author }, p.title)));
+    box.appendChild(row);
   } else {
-    const info = document.createElement('div');
-    info.className = 'assigned-box';
-    info.textContent = p.status === 'completed' ? 'Completed' : 'Task in progress';
-    box.appendChild(info);
-  }
-
-  // Report the poster
-  if (loggedIn) {
-    box.appendChild(mkBtn(`Report ${p.author}`, 'btn btn-outline',
-      'width:100%;font-size:11px;padding:4px;color:var(--danger);', () => openReportModal(p.authorId, p.author, p.id)));
+    const note = document.createElement('p');
+    note.className = 'status-note';
+    note.textContent = p.status === 'completed' ? 'This task is completed.' : 'This task is in progress.';
+    box.appendChild(note);
   }
   return box;
 }
