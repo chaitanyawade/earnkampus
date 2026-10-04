@@ -13,3 +13,10 @@ package-lock.json
 # Local environment files
 .env.local
 .env
+.env.*
+.env.example
+
+# Database scripts, tests and notes: never deployed
+*.sql
+security-test.js
+SECURITY_REPORT.md

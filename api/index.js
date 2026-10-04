@@ -33,11 +33,20 @@ app.set('trust proxy', 1); // Vercel sits behind a proxy
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const BCRYPT_ROUNDS = 12;
+const MAX_FAILED_LOGINS = 10;                 // wrong passwords before the account is paused
+const LOGIN_LOCK_MS = 15 * 60 * 1000;         // ...for 15 minutes
+const DUMMY_HASH = bcrypt.hashSync('earnkampus-timing-dummy', BCRYPT_ROUNDS); // so unknown emails cost the same time as real ones
 const COOKIE_NAME = 'earncampus_sid';
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
-const JWT_SECRET = process.env.JWT_SECRET || (IS_PRODUCTION ? null : 'earncampus-dev-secret-change-me');
-if (!JWT_SECRET) throw new Error('JWT_SECRET must be set in production.');
+let JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  if (IS_PRODUCTION) throw new Error('JWT_SECRET must be set in production.');
+  // Development only: a random secret per run, so there is never a guessable default (sessions reset on restart)
+  JWT_SECRET = crypto.randomBytes(48).toString('hex');
+  console.warn('[EarnKampus] JWT_SECRET is not set. Using a temporary random secret; logins reset on restart.');
+}
+if (IS_PRODUCTION && JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be at least 32 characters in production.');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -60,10 +69,12 @@ if (!mailer && IS_PRODUCTION) throw new Error('GMAIL_USER and GMAIL_APP_PASSWORD
 
 const OTP_TTL_MS = 10 * 60 * 1000;     // code valid for 10 minutes
 const OTP_MAX_ATTEMPTS = 5;            // wrong guesses before the signup must be restarted
-const OTP_RESEND_MS = 60 * 1000;       // minimum gap between sends to the same email
+const OTP_RESEND_MS = 60 * 1000;
+const OTP_LOCK_MS = 60 * 60 * 1000;   // wrong guesses carry over to new codes for this long
+const DEV_OTP = !mailer && !IS_PRODUCTION && process.env.ALLOW_DEV_OTP === 'true'; // show codes in the API reply: explicit opt-in, local only       // minimum gap between sends to the same email
 
 const LIMITS = {
-  name: 80, email: 254, password: { min: 8, max: 128 }, title: 120, details: 2000,
+  name: 80, email: 254, password: { min: 8, max: 72 }, title: 120, details: 2000,
   college: 120, message: 2000, search: 100, price: { max: 100000 },
   comment: 500, reason: 500,
 };
@@ -139,6 +150,12 @@ async function nameTaken(college, name, exceptUserId) {
 
 const NAME_TAKEN_MESSAGE = 'That name is already taken at your college. Add your surname or an initial so people can tell you apart.';
 
+/** Wrong guesses carry over to new codes for an hour, so asking for fresh codes cannot reset the limit. */
+function otpWindow(pending) {
+  const recent = !!pending && (Date.now() - new Date(pending.last_sent_at).getTime()) < OTP_LOCK_MS;
+  return { locked: recent && pending.attempts >= OTP_MAX_ATTEMPTS, carry: recent ? pending.attempts : 0 };
+}
+
 const hashOtp = (emailKey, code) => crypto.createHmac('sha256', JWT_SECRET).update(`${emailKey}:${code}`).digest('hex');
 const newOtp = () => String(crypto.randomInt(100000, 1000000));
 
@@ -157,7 +174,7 @@ async function sendOtpEmail(to, code, purpose = 'verify') {
 }
 
 function setSessionCookie(res, userId) {
-  const token = jwt.sign({ uid: userId }, JWT_SECRET, { expiresIn: '7d' });
+  const token = jwt.sign({ uid: userId }, JWT_SECRET, { expiresIn: '7d', algorithm: 'HS256' });
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
     secure: IS_PRODUCTION,
@@ -210,7 +227,7 @@ async function optionalUser(req) {
   const token = req.cookies && req.cookies[COOKIE_NAME];
   if (!token) return null;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     const { data } = await db.from('users').select('id,college').eq('id', payload.uid).maybeSingle();
     return data || null;
   } catch { return null; }
@@ -220,7 +237,7 @@ const requireAuth = ah(async (req, res, next) => {
   const token = req.cookies && req.cookies[COOKIE_NAME];
   if (!token) return res.status(401).json({ success: false, error: 'Authentication required.' });
   let payload;
-  try { payload = jwt.verify(token, JWT_SECRET); }
+  try { payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }); }
   catch { res.clearCookie(COOKIE_NAME); return res.status(401).json({ success: false, error: 'Session invalid. Please log in again.' }); }
 
   const { data: user, error } = await db.from('users').select('id,name,email,college,avatar,password_changed_at').eq('id', payload.uid).maybeSingle();
@@ -247,8 +264,13 @@ app.use((req, res, next) => {
     "img-src 'self' data:",
     "font-src 'self'",
     "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
     "frame-ancestors 'none'",
+    ...(IS_PRODUCTION ? ['upgrade-insecure-requests'] : []),
   ].join('; '));
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store'); // never cache account data
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -264,8 +286,20 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 }));
-app.use(express.json({ limit: '32kb' }));
-app.use(express.urlencoded({ extended: false, limit: '10kb' }));
+// CSRF defence in depth (on top of SameSite cookies): refuse state-changing requests from other sites
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  const origin = req.get('origin');
+  if (origin) {
+    let ok = ALLOWED_ORIGINS.includes(origin);
+    if (!ok) { try { ok = new URL(origin).host === req.get('host'); } catch { ok = false; } }
+    if (!ok) return res.status(403).json({ success: false, error: 'Cross-site request blocked.' });
+  } else if (req.get('sec-fetch-site') === 'cross-site') {
+    return res.status(403).json({ success: false, error: 'Cross-site request blocked.' });
+  }
+  next();
+});
+app.use(express.json({ limit: '32kb' })); // JSON only: HTML form posts are never needed
 app.use(cookieParser());
 app.use(rejectPollution);
 app.disable('x-powered-by');
@@ -273,11 +307,29 @@ app.disable('x-powered-by');
 // Brute-force protection on login/signup
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: IS_PRODUCTION ? 30 : 1000,
+  max: IS_PRODUCTION ? 120 : 1000, // backstop only: a whole campus can share one IP. Real limits are per account/email, stored in the database
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, error: 'Too many attempts. Try again later.' },
 });
+
+/** Per-logged-in-user limit for actions that could be used to spam others. */
+function userLimiter(max, windowMs, what) {
+  return rateLimit({
+    windowMs,
+    max: IS_PRODUCTION ? max : max * 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    keyGenerator: req => (req.user && req.user.id) || req.ip,
+    message: { success: false, error: `Too many ${what}. Please slow down and try again later.` },
+  });
+}
+const messageLimiter = userLimiter(60, 10 * 60 * 1000, 'messages');
+const postLimiter = userLimiter(20, 60 * 60 * 1000, 'new posts');
+const offerLimiter = userLimiter(60, 60 * 60 * 1000, 'offers');
+const reportLimiter = userLimiter(10, 60 * 60 * 1000, 'reports');
+const profileLimiter = userLimiter(10, 60 * 60 * 1000, 'profile changes');
 
 // ─── Auth routes ──────────────────────────────────────────────────────────────
 
@@ -319,12 +371,14 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
   if (cleanName.length < 2) return res.status(400).json({ success: false, error: 'Name must be at least 2 characters.' });
   if (await nameTaken(college, cleanName)) return res.status(409).json({ success: false, error: NAME_TAKEN_MESSAGE });
 
-  const { data: pending, error: e2 } = await db.from('email_otps').select('last_sent_at').eq('email_key', emailKey).maybeSingle();
+  const { data: pending, error: e2 } = await db.from('email_otps').select('last_sent_at,attempts').eq('email_key', emailKey).maybeSingle();
   if (e2) throw e2;
   if (pending) {
     const wait = OTP_RESEND_MS - (Date.now() - new Date(pending.last_sent_at).getTime());
     if (wait > 0) return res.status(429).json({ success: false, error: `Please wait ${Math.ceil(wait / 1000)} seconds before requesting another code.` });
   }
+  const win = otpWindow(pending);
+  if (win.locked) return res.status(429).json({ success: false, error: 'Too many wrong attempts for this email. Please try again in an hour.' });
 
   const code = newOtp();
   const { error: e3 } = await db.from('email_otps').upsert({
@@ -334,7 +388,7 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
     password_hash: await bcrypt.hash(password, BCRYPT_ROUNDS),
     code_hash: hashOtp(emailKey, code),
     expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
-    attempts: 0,
+    attempts: win.carry,
     last_sent_at: new Date().toISOString(),
   });
   if (e3) throw e3;
@@ -347,7 +401,7 @@ app.post('/api/auth/signup/start', authLimiter, ah(async (req, res) => {
   }
 
   const body = { success: true, message: `We sent a 6-digit code to ${cleanEmail}. Check your spam folder too.`, resendAfter: OTP_RESEND_MS / 1000 };
-  if (!mailer && !IS_PRODUCTION) body.devCode = code; // local development only, never in production
+  if (DEV_OTP) body.devCode = code;
   return res.json(body);
 }));
 
@@ -362,11 +416,14 @@ app.post('/api/auth/signup/resend', authLimiter, ah(async (req, res) => {
   const wait = OTP_RESEND_MS - (Date.now() - new Date(pending.last_sent_at).getTime());
   if (wait > 0) return res.status(429).json({ success: false, error: `Please wait ${Math.ceil(wait / 1000)} seconds before requesting another code.` });
 
+  const win = otpWindow(pending);
+  if (win.locked) return res.status(429).json({ success: false, error: 'Too many wrong attempts for this email. Please try again in an hour.' });
+
   const code = newOtp();
   const { error: e2 } = await db.from('email_otps').update({
     code_hash: hashOtp(emailKey, code),
     expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
-    attempts: 0,
+    attempts: win.carry,
     last_sent_at: new Date().toISOString(),
   }).eq('email_key', emailKey);
   if (e2) throw e2;
@@ -377,7 +434,7 @@ app.post('/api/auth/signup/resend', authLimiter, ah(async (req, res) => {
     return res.status(502).json({ success: false, error: 'Could not send the verification email. Please try again.' });
   }
   const body = { success: true, message: 'A new code was sent.', resendAfter: OTP_RESEND_MS / 1000 };
-  if (!mailer && !IS_PRODUCTION) body.devCode = code;
+  if (DEV_OTP) body.devCode = code;
   return res.json(body);
 }));
 
@@ -395,8 +452,7 @@ app.post('/api/auth/signup/verify', authLimiter, ah(async (req, res) => {
     return res.status(400).json({ success: false, error: 'This code has expired. Please request a new one.' });
   }
   if (pending.attempts >= OTP_MAX_ATTEMPTS) {
-    await db.from('email_otps').delete().eq('email_key', emailKey);
-    return res.status(429).json({ success: false, error: 'Too many wrong attempts. Please start signup again.' });
+    return res.status(429).json({ success: false, error: 'Too many wrong attempts for this email. Please try again in an hour.' });
   }
 
   const given = Buffer.from(hashOtp(emailKey, code.trim()), 'hex');
@@ -454,16 +510,18 @@ app.post('/api/auth/forgot/start', authLimiter, ah(async (req, res) => {
   if (error) throw error;
   if (!user) return res.json(body);
 
-  const { data: pending, error: e2 } = await db.from('password_resets').select('last_sent_at').eq('email_key', emailKey).maybeSingle();
+  const { data: pending, error: e2 } = await db.from('password_resets').select('last_sent_at,attempts').eq('email_key', emailKey).maybeSingle();
   if (e2) throw e2;
   if (pending && OTP_RESEND_MS - (Date.now() - new Date(pending.last_sent_at).getTime()) > 0) return res.json(body); // too soon: stay silent
+  const win = otpWindow(pending);
+  if (win.locked) return res.json(body); // too many wrong guesses recently: stay silent
 
   const code = newOtp();
   const { error: e3 } = await db.from('password_resets').upsert({
     email_key: emailKey,
     code_hash: hashOtp('reset:' + emailKey, code),
     expires_at: new Date(Date.now() + OTP_TTL_MS).toISOString(),
-    attempts: 0,
+    attempts: win.carry,
     last_sent_at: new Date().toISOString(),
   });
   if (e3) throw e3;
@@ -471,7 +529,7 @@ app.post('/api/auth/forgot/start', authLimiter, ah(async (req, res) => {
   try { await sendOtpEmail(user.email, code, 'reset'); }
   catch (err) { console.error('Reset email failed:', err.message || err); }
 
-  if (!mailer && !IS_PRODUCTION) body.devCode = code; // local development only
+  if (DEV_OTP) body.devCode = code;
   return res.json(body);
 }));
 
@@ -492,8 +550,7 @@ app.post('/api/auth/forgot/reset', authLimiter, ah(async (req, res) => {
   if (!pending) return res.status(400).json(invalid);
   if (new Date(pending.expires_at).getTime() < Date.now()) return res.status(400).json(invalid);
   if (pending.attempts >= OTP_MAX_ATTEMPTS) {
-    await db.from('password_resets').delete().eq('email_key', emailKey);
-    return res.status(429).json({ success: false, error: 'Too many wrong attempts. Please request a new code.' });
+    return res.status(429).json({ success: false, error: 'Too many wrong attempts for this email. Please try again in an hour.' });
   }
 
   const given = Buffer.from(hashOtp('reset:' + emailKey, code.trim()), 'hex');
@@ -507,6 +564,8 @@ app.post('/api/auth/forgot/reset', authLimiter, ah(async (req, res) => {
   const { error: e2 } = await db.from('users').update({
     password_hash: await bcrypt.hash(newPassword, BCRYPT_ROUNDS),
     password_changed_at: new Date().toISOString(), // logs out all older sessions
+    failed_login_count: 0,
+    login_locked_until: null,
   }).eq('email_canonical', emailKey);
   if (e2) throw e2;
   await db.from('password_resets').delete().eq('email_key', emailKey);
@@ -528,9 +587,26 @@ app.post('/api/auth/login', authLimiter, ah(async (req, res) => {
     user = data;
   }
 
-  const dummyHash = '$2a$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
-  const match = await bcrypt.compare(password, user ? user.password_hash : dummyHash);
-  if (!user || !match) return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+  if (user && user.login_locked_until && new Date(user.login_locked_until).getTime() > Date.now()) {
+    const mins = Math.ceil((new Date(user.login_locked_until).getTime() - Date.now()) / 60000);
+    return res.status(429).json({ success: false, error: `Too many failed attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}, or reset your password.` });
+  }
+
+  const match = await bcrypt.compare(password, user ? user.password_hash : DUMMY_HASH);
+  if (!user || !match) {
+    if (user) {
+      const fails = (user.failed_login_count || 0) + 1;
+      const lock = fails >= MAX_FAILED_LOGINS;
+      await db.from('users').update({
+        failed_login_count: lock ? 0 : fails,
+        login_locked_until: lock ? new Date(Date.now() + LOGIN_LOCK_MS).toISOString() : null,
+      }).eq('id', user.id);
+    }
+    return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+  }
+  if (user.failed_login_count || user.login_locked_until) {
+    await db.from('users').update({ failed_login_count: 0, login_locked_until: null }).eq('id', user.id);
+  }
 
   setSessionCookie(res, user.id);
   return res.json({ success: true, user: sessionUser(user) });
@@ -539,7 +615,7 @@ app.post('/api/auth/login', authLimiter, ah(async (req, res) => {
 const NAME_CHANGE_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** PUT /api/auth/profile { name } — change display name (once every 14 days). */
-app.put('/api/auth/profile', requireAuth, ah(async (req, res) => {
+app.put('/api/auth/profile', requireAuth, profileLimiter, ah(async (req, res) => {
   const nameErr = validateString(req.body.name, 'Name', LIMITS.name);
   if (nameErr) return res.status(400).json({ success: false, error: nameErr });
   const name = normalizeName(req.body.name);
@@ -748,7 +824,7 @@ app.get('/api/my-tasks', requireAuth, ah(async (req, res) => {
   return res.json({ success: true, count: posts.length, posts });
 }));
 
-app.post('/api/posts', requireAuth, ah(async (req, res) => {
+app.post('/api/posts', requireAuth, postLimiter, ah(async (req, res) => {
   const { title, details, price, type, category, slotsNeeded } = req.body;
   const cleanType = typeof type === 'string' && VALID_TYPES.includes(type) ? type : 'need';
 
@@ -853,7 +929,7 @@ app.put('/api/posts/:id', requireAuth, ah(async (req, res) => {
   });
 }));
 
-app.post('/api/posts/:id/offer', requireAuth, ah(async (req, res) => {
+app.post('/api/posts/:id/offer', requireAuth, offerLimiter, ah(async (req, res) => {
   const post = await getPost(req.params.id);
   if (!post) return res.status(404).json({ success: false, error: 'Post not found.' });
   if (post.status !== 'open') return res.status(409).json({ success: false, error: 'Post is not open for offers.' });
@@ -1024,7 +1100,7 @@ app.delete('/api/posts/:id', requireAuth, ah(async (req, res) => {
   if (!post) return res.status(404).json({ success: false, error: 'Post not found.' });
   if (post.author_id !== req.user.id) return res.status(403).json({ success: false, error: 'You are not authorized to delete this post.' });
   const asg = await getAssignments(post.id);
-  if (asg.some(a => a.status === 'assigned')) return res.status(409).json({ success: false, error: 'Reassign or complete the active volunteers before deleting.' });
+  if (asg.length > 0) return res.status(409).json({ success: false, error: 'Posts that have volunteers cannot be deleted, because ratings and payment records depend on them.' });
   const { error } = await db.from('posts').delete().eq('id', post.id);
   if (error) throw error;
   return res.json({ success: true, message: 'Post deleted successfully.' });
@@ -1071,7 +1147,7 @@ app.post('/api/posts/:id/rate', requireAuth, ah(async (req, res) => {
 const REPORT_CATEGORIES = ['scam', 'no_show', 'harassment', 'fake_post', 'inappropriate', 'other'];
 
 /** POST /api/reports — report a user, with a cause (and details, required for 'other') */
-app.post('/api/reports', requireAuth, ah(async (req, res) => {
+app.post('/api/reports', requireAuth, reportLimiter, ah(async (req, res) => {
   const { targetUserId, postId, category, reason } = req.body;
   if (!targetUserId || typeof targetUserId !== 'string') return res.status(400).json({ success: false, error: 'targetUserId is required.' });
   if (targetUserId === req.user.id) return res.status(400).json({ success: false, error: 'You cannot report yourself.' });
@@ -1082,6 +1158,12 @@ app.post('/api/reports', requireAuth, ah(async (req, res) => {
   const { data: target, error: e1 } = await db.from('users').select('id').eq('id', targetUserId).maybeSingle();
   if (e1) throw e1;
   if (!target) return res.status(404).json({ success: false, error: 'User not found.' });
+
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const { data: recent, error: e2 } = await db.from('reports').select('id')
+    .eq('reporter_id', req.user.id).eq('target_user_id', targetUserId).gte('created_at', since).limit(1);
+  if (e2) throw e2;
+  if (recent.length) return res.status(429).json({ success: false, error: 'You already reported this person today. Our team will review it.' });
 
   const { error } = await db.from('reports').insert({
     id: genId('rep'), reporter_id: req.user.id, target_user_id: targetUserId, category,
@@ -1120,7 +1202,7 @@ app.post('/api/messages/read', requireAuth, ah(async (req, res) => {
   return res.json({ success: true });
 }));
 
-app.post('/api/messages', requireAuth, ah(async (req, res) => {
+app.post('/api/messages', requireAuth, messageLimiter, ah(async (req, res) => {
   const { receiverId, text } = req.body;
   if (!receiverId || typeof receiverId !== 'string') return res.status(400).json({ success: false, error: 'receiverId is required.' });
   const textErr = validateString(text, 'Message text', LIMITS.message);
@@ -1145,31 +1227,19 @@ app.post('/api/messages', requireAuth, ah(async (req, res) => {
 app.get('/api/users', requireAuth, ah(async (req, res) => {
   const { data: users, error } = await db.from('users').select('id,name,college,avatar').eq('college', req.user.college).limit(500);
   if (error) throw error;
-  const { data: ratings, error: e2 } = await db.from('ratings').select('ratee_id,score');
-  if (e2) throw e2;
-  const { data: cancels, error: e3 } = await db.from('task_cancellations').select('user_id').eq('reason', 'reassigned');
-  if (e3) throw e3;
-  const agg = {}, cancelled = {};
-  for (const r of ratings) { (agg[r.ratee_id] = agg[r.ratee_id] || []).push(r.score); }
-  for (const c of cancels) { cancelled[c.user_id] = (cancelled[c.user_id] || 0) + 1; }
+  const rm = await ratingMap(users.map(u => u.id)); // ratings for these users only, never the whole table
   return res.json({
     success: true,
-    users: users.map(u => {
-      const sc = agg[u.id];
-      return publicProfile(u, {
-        avg: sc ? Math.round((sc.reduce((x, y) => x + y, 0) / sc.length) * 10) / 10 : null,
-        count: sc ? sc.length : 0,
-        cancelled: cancelled[u.id] || 0,
-      });
-    }),
+    users: users.map(u => publicProfile(u, { avg: rm[u.id].avg, count: rm[u.id].count, cancelled: 0 })),
   });
 }));
 
-app.get('/api/users/profile', ah(async (req, res) => {
+/** Profiles are visible only to logged-in students of the same college. */
+app.get('/api/users/profile', requireAuth, ah(async (req, res) => {
   const { id, name } = req.query;
-  let q = db.from('users').select('id,name,college,avatar');
+  let q = db.from('users').select('id,name,college,avatar').eq('college', req.user.college);
   if (id && typeof id === 'string') q = q.eq('id', id);
-  else if (name && typeof name === 'string' && name.length <= LIMITS.name) q = q.ilike('name', name.trim().replace(/[%_,()]/g, ''));
+  else if (name && typeof name === 'string' && name.length <= LIMITS.name) q = q.ilike('name', name.trim().replace(/[%_,()\\]/g, ''));
   else return res.status(400).json({ success: false, error: 'Provide id or name query parameter.' });
 
   const { data, error } = await q.limit(1);
@@ -1178,25 +1248,27 @@ app.get('/api/users/profile', ah(async (req, res) => {
   return res.json({ success: true, profile: publicProfile(data[0], await ratingFor(data[0].id)) });
 }));
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
+// ─── Stats (cached for a minute so it cannot be used to hammer the database) ──
+
+let statsCache = { at: 0, value: null };
 
 app.get('/api/stats', ah(async (req, res) => {
+  if (statsCache.value && Date.now() - statsCache.at < 60 * 1000) return res.json({ success: true, stats: statsCache.value });
   const { data, error } = await db.from('posts').select('id,status,price,interested_users');
   if (error) throw error;
   const { data: asg, error: e2 } = await db.from('assignments').select('post_id,status');
   if (e2) throw e2;
   const price = Object.fromEntries(data.map(p => [p.id, p.price]));
   const volunteers = new Set(data.flatMap(p => (p.interested_users || []).map(u => u.userId)));
-  return res.json({
-    success: true,
-    stats: {
-      openTasks: data.filter(p => p.status === 'open').length,
-      completedTasks: data.filter(p => p.status === 'completed').length,
-      totalEarned: asg.filter(a => a.status === 'completed').reduce((t, a) => t + (price[a.post_id] || 0), 0),
-      activeVolunteers: volunteers.size,
-      totalPosts: data.length,
-    },
-  });
+  const stats = {
+    openTasks: data.filter(p => p.status === 'open').length,
+    completedTasks: data.filter(p => p.status === 'completed').length,
+    totalEarned: asg.filter(a => a.status === 'completed').reduce((t, a) => t + (price[a.post_id] || 0), 0),
+    activeVolunteers: volunteers.size,
+    totalPosts: data.length,
+  };
+  statsCache = { at: Date.now(), value: stats };
+  return res.json({ success: true, stats });
 }));
 
 // ─── Error handler ────────────────────────────────────────────────────────────

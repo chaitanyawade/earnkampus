@@ -93,7 +93,7 @@ async function verifySession() {
           isLoggedIn: true,
         };
         // Keep localStorage hint in sync with server data
-        localStorage.setItem('earncampus_ui_hint', JSON.stringify(data.user));
+        localStorage.setItem('earncampus_ui_hint', JSON.stringify({ id: data.user.id, name: data.user.name, college: data.user.college })); // no email stored in the browser
         updateUserUI();
         return;
       }
