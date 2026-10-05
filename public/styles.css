@@ -440,6 +440,7 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; }
 .vol-name { font-size: 14px; font-weight: 650; color: var(--ink); overflow-wrap: anywhere; }
 a.vol-name:hover { color: var(--accent-text); }
 .vol-rating { font-size: 12.5px; color: var(--muted); }
+.vol-note { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .vol-actions { display: flex; gap: 8px; align-items: center; }
 .vol-actions > .btn { flex: 1; }
 

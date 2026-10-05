@@ -274,6 +274,34 @@ function closeAuthRequiredModal() {
 }
 
 let editingPostId = null; // set while the composer is editing an existing post
+let editingPostType = null;
+
+const METHOD_LABELS = { upi: 'UPI' };
+
+/** "per customer" for services, "per volunteer" for multi-volunteer help requests. */
+function priceNote(p) {
+  if (p.type === 'offer') return 'per customer';
+  return (p.slotsNeeded || 1) > 1 ? 'per volunteer' : '';
+}
+
+/** Make the create / edit form use the right words for the post type. */
+function applyPostTypeUI(type) {
+  const offer = type === 'offer';
+  const set = (id, fn) => { const el = document.getElementById(id); if (el) fn(el); };
+  set('priceLabel', el => { el.textContent = offer ? 'Price per customer (\u20b9)' : 'Reward each (\u20b9)'; });
+  set('slotsLabel', el => { el.textContent = offer ? 'Customers you can serve' : 'Volunteers needed'; });
+  set('postTitleInput', el => { el.placeholder = offer ? 'e.g. Printing and spiral binding at the hostel' : 'e.g. Print and collect 20 pages'; });
+  set('postDetailsInput', el => { el.placeholder = offer ? 'What you offer, and where and when you are available' : 'Where, when, and anything the volunteer should know'; });
+  set('postPayHelp', el => {
+    el.textContent = offer
+      ? 'Customers pay you directly by UPI. They enter the transaction ID and you confirm when the money arrives. Online payment inside EarnKampus is planned for a later version.'
+      : 'The reward is paid per volunteer. You pay each volunteer directly by UPI. Online payment inside EarnKampus is planned for a later version.';
+  });
+}
+
+(function watchPostType() {
+  document.getElementsByName('postType').forEach(r => r.addEventListener('change', () => applyPostTypeUI(r.value)));
+})();
 
 function openComposerModal() {
   if (!currentState.currentUser.isLoggedIn) {
@@ -304,6 +332,8 @@ function resetComposerMode() {
   set('postPriceInput', el => { el.disabled = false; });
   set('postSlotsInput', el => { el.min = '1'; });
   set('postModeNote', el => { el.hidden = true; el.textContent = ''; });
+  editingPostType = null;
+  applyPostTypeUI('need');
 }
 
 /** Open the composer pre-filled with an existing post. */
@@ -313,6 +343,8 @@ function openEditModal(p) {
   const locked = assigned > 0; // price/category are fixed once volunteers have agreed to them
 
   editingPostId = p.id;
+  editingPostType = p.type;
+  applyPostTypeUI(p.type);
   document.getElementById('modalTitle').textContent = 'Edit post';
   document.getElementById('postSubmitBtn').textContent = 'Save changes';
   document.getElementById('postTypeField').hidden = true;
@@ -741,6 +773,8 @@ function renderPosts() {
   const countBadge = document.getElementById('feedCountBadge');
   if (!postsGrid) return;
 
+  closeFloatingMenus();
+  document.querySelectorAll('body > .menu-list').forEach(el => el.remove()); // none may be left floating from the old cards
   postsGrid.textContent = '';
   if (countBadge) {
     const n = currentState.posts.length;
@@ -814,14 +848,16 @@ function openPostDetail(p) {
   addTag((p.status || '').replace('_', ' '), `status-badge status-${p.status}`);
   if ((p.slotsNeeded || 1) > 1) addTag(`${(p.assignees || []).length}/${p.slotsNeeded} filled`, 'tag-badge');
   if (p.editedAt) addTag('Edited', 'tag-badge');
+  if (p.type === 'offer') addTag('Pay by UPI', 'tag-badge');
 
   const price = document.createElement('div');
   price.className = 'price-pill';
   price.textContent = `\u20b9${p.price}`;
-  if ((p.slotsNeeded || 1) > 1) {
+  const detailNote = priceNote(p);
+  if (detailNote) {
     const note = document.createElement('span');
     note.className = 'price-note';
-    note.textContent = 'per volunteer';
+    note.textContent = detailNote;
     price.appendChild(note);
   }
   top.appendChild(tags);
@@ -930,13 +966,21 @@ function buildPostCard(p) {
     cardTags.appendChild(filledBadge);
   }
 
+  if (p.type === 'offer') {
+    const payBadge = document.createElement('span');
+    payBadge.className = 'tag-badge';
+    payBadge.textContent = 'Pay by UPI';
+    cardTags.appendChild(payBadge);
+  }
+
   const pricePill = document.createElement('div');
   pricePill.className = 'price-pill';
   pricePill.textContent = `₹${p.price}`;
-  if ((p.slotsNeeded || 1) > 1) {
+  const noteText = priceNote(p);
+  if (noteText) {
     const note = document.createElement('span');
     note.className = 'price-note';
-    note.textContent = 'per volunteer';
+    note.textContent = noteText;
     pricePill.appendChild(note);
   }
 
@@ -1113,11 +1157,44 @@ function buildMenu(items) {
     list.appendChild(b);
   });
   menu.appendChild(list);
+
+  // The list is moved to <body> while open. Inside a scrolling panel (like the volunteers list) it would
+  // otherwise be cut off at the panel's edge, which is why the first row's menu was half hidden.
+  menu.addEventListener('toggle', () => {
+    if (menu.open) floatMenu(menu, list); else dockMenu(menu, list);
+  });
   return menu;
 }
 
+function floatMenu(menu, list) {
+  const rect = menu.getBoundingClientRect();
+  list.style.cssText = 'position:fixed;top:0;left:0;right:auto;bottom:auto;z-index:300;visibility:hidden;';
+  document.body.appendChild(list);
+  const w = list.offsetWidth;
+  const h = list.offsetHeight;
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const openUp = spaceBelow < h + 12 && rect.top > spaceBelow; // open upward only when there is no room below
+  const top = openUp ? rect.top - h - 6 : rect.bottom + 6;
+  const left = Math.min(Math.max(8, rect.right - w), window.innerWidth - w - 8);
+  list.style.top = `${Math.max(8, top)}px`;
+  list.style.left = `${left}px`;
+  list.style.visibility = 'visible';
+}
+
+function dockMenu(menu, list) {
+  list.style.cssText = '';
+  menu.appendChild(list);
+}
+
+function closeFloatingMenus() {
+  document.querySelectorAll('details.menu[open]').forEach(m => { m.open = false; });
+}
+window.addEventListener('scroll', closeFloatingMenus, true); // capture: also catches scrolling inside a panel
+window.addEventListener('resize', closeFloatingMenus);
+
 // Close any open "More" menu when clicking elsewhere
 document.addEventListener('click', e => {
+  if (e.target.closest && e.target.closest('.menu-list')) return; // item handlers close their own menu
   document.querySelectorAll('details.menu[open]').forEach(m => { if (!m.contains(e.target)) m.open = false; });
 });
 
@@ -1134,6 +1211,7 @@ function volunteerStatus(a) {
  * isAuthor: the poster managing a volunteer. Otherwise it is the volunteer's own row.
  */
 function buildAssigneeRow(p, a, isAuthor) {
+  if (p.type === 'offer') return buildServiceRow(p, a, isAuthor);
   const row = document.createElement('div');
   row.className = 'vol-row';
 
@@ -1237,6 +1315,8 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
   const assignees = p.assignees || [];
   const slots = p.slotsNeeded || 1;
   const openSlots = slots - assignees.length;
+  const isOffer = p.type === 'offer';
+  const who = isOffer ? 'customer' : 'volunteer';
 
   const box = document.createElement('div');
   box.className = 'card-footer';
@@ -1245,13 +1325,13 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
   if (isAuthor) {
     if (assignees.length) {
       const doneCount = assignees.filter(a => a.status === 'completed').length;
-      const hint = `${assignees.length} of ${slots} assigned` + (doneCount ? `, ${doneCount} done` : '');
-      box.appendChild(buildCollapsible(`${p.id}:team`, 'Volunteers', hint,
+      const hint = `${assignees.length} of ${slots} ${isOffer ? 'booked' : 'assigned'}` + (doneCount ? `, ${doneCount} done` : '');
+      box.appendChild(buildCollapsible(`${p.id}:team`, isOffer ? 'Customers' : 'Volunteers', hint,
         assignees.map(a => buildAssigneeRow(p, a, true)), assignees.length <= 2));
     }
 
     if (p.status === 'open' && assignees.length > 0 && openSlots > 0) {
-      box.appendChild(mkBtn(`Start with ${assignees.length} volunteer${assignees.length > 1 ? 's' : ''} now`,
+      box.appendChild(mkBtn(`Start with ${assignees.length} ${who}${assignees.length > 1 ? 's' : ''} now`,
         'btn btn-outline btn-sm', '', () => startWithCurrent(p.id)));
     }
 
@@ -1264,7 +1344,7 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
       const head = document.createElement('div');
       head.className = 'offers-head';
       const headTitle = document.createElement('span');
-      headTitle.textContent = 'Volunteer offers';
+      headTitle.textContent = isOffer ? 'Service requests' : 'Volunteer offers';
       const headHint = document.createElement('span');
       headHint.className = 'collapsible-meta';
       headHint.textContent = `${openSlots} spot${openSlots === 1 ? '' : 's'} left`;
@@ -1283,8 +1363,8 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
       const wait = document.createElement('p');
       wait.className = 'status-note';
       wait.textContent = assignees.length
-        ? `Waiting for ${openSlots} more volunteer${openSlots === 1 ? '' : 's'}.`
-        : 'Waiting for volunteers to respond.';
+        ? `Waiting for ${openSlots} more ${who}${openSlots === 1 ? '' : 's'}.`
+        : (isOffer ? 'Waiting for customers to request your service.' : 'Waiting for volunteers to respond.');
       box.appendChild(wait);
     }
     return box;
@@ -1297,7 +1377,7 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
     const row = document.createElement('div');
     row.className = 'footer-row';
     if (hasOffered) {
-      const sent = mkBtn('Offer sent', 'btn btn-outline', 'flex:1;', () => {});
+      const sent = mkBtn(p.type === 'offer' ? 'Request sent' : 'Offer sent', 'btn btn-outline', 'flex:1;', () => {});
       sent.disabled = true;
       row.appendChild(sent);
     } else {
@@ -1312,6 +1392,149 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
     box.appendChild(note);
   }
   return box;
+}
+
+// ── Service posts ("I offer a service"): customers pay, the provider confirms ──
+// Delivery is confirmed by the customer; payment is recorded by the customer and confirmed by the provider.
+
+function serviceStatus(a) {
+  const stage = a.status === 'completed' ? 'Service confirmed' : a.status === 'delivered' ? 'Delivered' : 'Booked';
+  const pay = a.paymentStatus === 'confirmed' ? 'paid' : a.paymentStatus === 'paid' ? 'payment to verify' : 'unpaid';
+  const finished = a.status === 'completed' && a.paymentStatus === 'confirmed';
+  return { text: `${stage}, ${pay}`, tone: finished ? 'ok' : (a.status === 'assigned' ? 'warn' : 'info') };
+}
+
+function buildServiceRow(p, a, isAuthor) {
+  const row = document.createElement('div');
+  row.className = 'vol-row';
+
+  const top = document.createElement('div');
+  top.className = 'vol-top';
+  const who = document.createElement('div');
+  who.className = 'vol-who';
+  if (isAuthor) {
+    const nameLink = document.createElement('a');
+    nameLink.href = `profile.html?id=${encodeURIComponent(a.userId)}`;
+    nameLink.className = 'vol-name';
+    nameLink.textContent = a.name; // textContent (V8)
+    const rating = document.createElement('span');
+    rating.className = 'vol-rating';
+    rating.textContent = ratingLabel(a.ratingAvg, a.ratingCount);
+    who.appendChild(nameLink);
+    who.appendChild(rating);
+  } else {
+    const you = document.createElement('span');
+    you.className = 'vol-name';
+    you.textContent = 'Your booking';
+    who.appendChild(you);
+  }
+  const status = serviceStatus(a);
+  top.appendChild(who);
+  top.appendChild(buildChip(status.text, status.tone));
+  row.appendChild(top);
+
+  // What the customer reported paying, so the provider can check it in their UPI app
+  if (a.paymentStatus !== 'unpaid' && a.paymentMethod) {
+    const note = document.createElement('div');
+    note.className = 'vol-note';
+    note.textContent = `Paid by ${METHOD_LABELS[a.paymentMethod] || a.paymentMethod}` + (a.paymentRef ? ` \u00b7 reference ${a.paymentRef}` : '');
+    row.appendChild(note);
+  }
+
+  const other = isAuthor ? { id: a.userId, name: a.name } : { id: p.authorId, name: p.author };
+  const message = () => openMessagesModal({ id: other.id, name: other.name }, p.title);
+  const rate = () => openRatingModal(p.id, other.name, isAuthor ? a.userId : undefined);
+  const finishedService = a.status === 'completed';
+  let primary = null;
+  const menu = [];
+
+  if (isAuthor) {
+    if (a.paymentStatus === 'paid') {
+      primary = mkBtn('Confirm payment received', 'btn btn-black', '', () => paymentReceived(p.id, a.userId, true));
+      menu.push({ label: 'I did not receive this payment', danger: true, onClick: () => paymentReceived(p.id, a.userId, false) });
+      if (a.status === 'assigned') menu.push({ label: 'Mark delivered', onClick: () => deliverService(p.id, a.userId, a.name) });
+    } else if (a.status === 'assigned') {
+      primary = mkBtn('Mark delivered', 'btn btn-black', '', () => deliverService(p.id, a.userId, a.name));
+      if (a.paymentStatus === 'unpaid') menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'reassign', a.userId, a.name) });
+    } else if (finishedService && a.paymentStatus === 'confirmed') {
+      primary = mkBtn(`Rate ${a.name}`, 'btn btn-black', '', rate);
+    }
+    if (finishedService && a.paymentStatus !== 'confirmed') menu.push({ label: `Rate ${a.name}`, onClick: rate });
+    menu.push({ label: `Report ${a.name}`, danger: true, onClick: () => openReportModal(a.userId, a.name, p.id) });
+  } else {
+    if (a.status === 'delivered') {
+      primary = mkBtn('Confirm service received', 'btn btn-black', '', () => confirmDelivery(p.id));
+      if (a.paymentStatus === 'unpaid') menu.push({ label: 'Mark payment as sent', onClick: () => openPaymentModal(p) });
+    } else if (a.paymentStatus === 'unpaid') {
+      primary = mkBtn('Mark payment as sent', 'btn btn-black', '', () => openPaymentModal(p));
+      if (a.status === 'assigned') menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'withdraw') });
+    } else if (finishedService) {
+      primary = mkBtn(`Rate ${p.author}`, 'btn btn-black', '', rate);
+    }
+    if (finishedService && a.paymentStatus === 'unpaid') menu.push({ label: `Rate ${p.author}`, onClick: rate });
+  }
+  if (!primary) primary = mkBtn(`Message ${other.name}`, 'btn btn-outline', '', message);
+  else menu.push({ label: 'Message', onClick: message });
+
+  const actions = document.createElement('div');
+  actions.className = 'vol-actions';
+  actions.appendChild(primary);
+  if (menu.length) actions.appendChild(buildMenu(menu));
+  row.appendChild(actions);
+  return row;
+}
+
+function deliverService(postId, customerUserId, name) {
+  if (!confirm(`Mark the service as delivered to ${name}? They will be asked to confirm it.`)) return;
+  return postAction({ id: postId, action: 'deliver' }, { customerUserId });
+}
+
+function confirmDelivery(postId) {
+  if (!confirm('Confirm that you received the service?')) return;
+  return postAction({ id: postId, action: 'confirm-delivery' }, {});
+}
+
+function paymentReceived(postId, customerUserId, received) {
+  const msg = received
+    ? 'Confirm that the money has reached you? Check your UPI app first.'
+    : 'Tell the customer you did NOT receive this payment? It goes back to unpaid.';
+  if (!confirm(msg)) return;
+  return postAction({ id: postId, action: 'payment-received' }, { customerUserId, received });
+}
+
+function openPaymentModal(p) {
+  openTrustModal({
+    title: 'Mark payment as sent',
+    intro: `Pay ${p.author} directly by UPI, then enter the transaction ID so they can check it in their UPI app.`,
+    withScore: false,
+    placeholder: 'UPI transaction ID',
+    submitLabel: 'I have paid',
+    onSubmit: ({ text }) => {
+      const ref = (text || '').trim();
+      if (ref.length < 4) { showToast('Enter the UPI transaction ID.', 'error'); return false; }
+      if (ref.length > 60) { showToast('Transaction ID can be at most 60 characters.', 'error'); return false; }
+      return submitServicePayment(p.id, 'upi', ref);
+    },
+  });
+}
+
+async function submitServicePayment(postId, method, reference) {
+  try {
+    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(postId)}/payment-sent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ method, reference }),
+    });
+    if (res.status === 401) { clearUserSession(); return false; }
+    const data = await res.json();
+    if (data.success) { showToast(data.message || 'Payment recorded.', 'success'); fetchPosts(); return true; }
+    showToast(data.error || 'Could not record the payment.', 'error');
+    return false;
+  } catch (err) {
+    showToast('Network error. Please try again.', 'error');
+    return false;
+  }
 }
 
 // ── Trust features: ratings & reports ──────────────────────────────────────────
@@ -1509,13 +1732,15 @@ async function handleCreatePost(e) {
   // Client-side trim; server enforces limits too
   if (!title || title.trim() === '') { showToast('Title is required.', 'error'); return; }
 
+  const paymentMethods = selectedType === 'offer' ? ['upi'] : undefined; // customers pay providers by UPI
+
   try {
     const res = await fetch(`${API_BASE}/posts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       // Do NOT send author/authorId — server derives from session (V3)
-      body: JSON.stringify({ type: selectedType, title, category, price, details, slotsNeeded }),
+      body: JSON.stringify({ type: selectedType, title, category, price, details, slotsNeeded, paymentMethods }),
     });
 
     if (res.status === 401) {
@@ -1634,7 +1859,7 @@ function changeAssignment(postId, action, volunteerUserId, volunteerName) {
 }
 
 function markPaid(postId, volunteerUserId, name, price) {
-  if (!confirm(`Only continue if you have really paid ${name} ₹${price} (UPI/cash). Mark as paid?`)) return;
+  if (!confirm(`Only continue if you have really paid ${name} ₹${price} by UPI. Mark as paid?`)) return;
   return postAction({ id: postId, action: 'pay' }, { volunteerUserId });
 }
 
