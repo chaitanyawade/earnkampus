@@ -79,10 +79,6 @@ const LIMITS = {
   comment: 500, reason: 500,
 };
 const VALID_TYPES = ['need', 'offer'];
-const PAYMENT_METHODS = ['upi'];   // payments are made directly by UPI for now; in-app online payment is planned for later
-
-/** Clean a list of payment methods from a request: only known ones, no duplicates. */
-const cleanMethods = list => (Array.isArray(list) ? [...new Set(list.filter(m => typeof m === 'string' && PAYMENT_METHODS.includes(m)))] : []);
 const VALID_CATEGORIES = ['Delivery', 'Tutoring', 'Printing', 'Equipment', 'Physical', 'Other'];
 const VALID_STATUSES = ['open', 'in_progress', 'completed'];
 
@@ -193,7 +189,6 @@ const toPost = p => ({
   id: p.id, type: p.type, title: p.title, details: p.details, price: p.price,
   college: p.college, category: p.category,
   authorId: p.author_id, author: p.author, status: p.status, createdAt: p.created_at, editedAt: p.edited_at || null,
-  paymentMethods: (p.payment_methods || '').split(',').filter(m => PAYMENT_METHODS.includes(m)),
   interestedUsers: p.interested_users || [],
   selectedUser: p.selected_user, selectedUserId: p.selected_user_id,
 });
@@ -711,9 +706,6 @@ async function postsOut(rows, viewerId) {
   return rows.map(r => {
     const assignees = (byPost[r.id] || []).map(a => ({
       userId: a.user_id, name: a.user_name, status: a.status, paymentStatus: a.payment_status,
-      // How and with what reference a customer paid: visible only to the provider and that customer
-      paymentMethod: viewerId && (viewerId === r.author_id || viewerId === a.user_id) ? a.payment_method : null,
-      paymentRef: viewerId && (viewerId === r.author_id || viewerId === a.user_id) ? a.payment_ref : null,
       ratingAvg: rate(a.user_id).avg, ratingCount: rate(a.user_id).count,
     }));
     const post = toPost(r);
@@ -833,7 +825,7 @@ app.get('/api/my-tasks', requireAuth, ah(async (req, res) => {
 }));
 
 app.post('/api/posts', requireAuth, postLimiter, ah(async (req, res) => {
-  const { title, details, price, type, category, slotsNeeded, paymentMethods } = req.body;
+  const { title, details, price, type, category, slotsNeeded } = req.body;
   const cleanType = typeof type === 'string' && VALID_TYPES.includes(type) ? type : 'need';
 
   const titleErr = validateString(title, 'Title', LIMITS.title);
@@ -851,13 +843,6 @@ app.post('/api/posts', requireAuth, postLimiter, ah(async (req, res) => {
     return res.status(400).json({ success: false, error: `Volunteers needed must be a whole number from 1 to ${MAX_SLOTS}.` });
   }
 
-  // A service provider says how customers can pay them
-  let methods = '';
-  if (cleanType === 'offer') {
-    const list = cleanMethods(paymentMethods);
-    methods = (list.length ? list : PAYMENT_METHODS).join(',');
-  }
-
   const row = {
     id: genId('p'),
     type: cleanType,
@@ -865,7 +850,6 @@ app.post('/api/posts', requireAuth, postLimiter, ah(async (req, res) => {
     details: (details || '').trim().slice(0, LIMITS.details),
     price: Math.round(priceNum),   // reward PER volunteer
     slots_needed: slotsNum,
-    payment_methods: methods,
     college: req.user.college,
     category: cleanCategory,
     author_id: req.user.id,
@@ -1035,9 +1019,10 @@ app.post('/api/posts/:id/complete', requireAuth, ah(async (req, res) => {
 /**
  * Service posts ("I offer a service") work the other way round from help requests:
  * the poster is the provider and gets paid; each responder is a customer.
- *   provider:  deliver            -> customer: confirm-delivery
- *   customer:  payment-sent       -> provider: payment-received
- * Neither side can complete the other side's step, so nobody can mark themselves delivered-and-paid.
+ *   1. provider:  deliver           ("Mark delivered")
+ *   2. customer:  payment-sent      ("Mark payment as sent": also confirms the service was received)
+ *   3. provider:  payment-received  ("Confirm payment received": finishes the booking)
+ * Each step belongs to the other person, so nobody can mark a booking delivered, paid and finished on their own.
  */
 async function getServicePost(req, res) {
   const post = await getPost(req.params.id);
@@ -1060,39 +1045,19 @@ app.post('/api/posts/:id/deliver', requireAuth, ah(async (req, res) => {
   return res.json({ success: true, message: `Marked as delivered. ${a.user_name} will be asked to confirm.`, post: await postOut(await syncPostStatus(post.id), req.user.id) });
 }));
 
-app.post('/api/posts/:id/confirm-delivery', requireAuth, ah(async (req, res) => {
-  const post = await getServicePost(req, res); if (!post) return;
-  const a = (await getAssignments(post.id)).find(x => x.user_id === req.user.id);
-  if (!a) return res.status(403).json({ success: false, error: 'You are not a customer on this post.' });
-  if (a.status !== 'delivered') return res.status(409).json({ success: false, error: 'The provider has not marked this delivered yet.' });
-
-  const { data, error } = await db.from('assignments').update({ status: 'completed', completed_at: new Date().toISOString() })
-    .eq('id', a.id).eq('status', 'delivered').select('id');
-  if (error) throw error;
-  if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
-  return res.json({ success: true, message: 'Service confirmed. Thank you!', post: await postOut(await syncPostStatus(post.id), req.user.id) });
-}));
-
 app.post('/api/posts/:id/payment-sent', requireAuth, ah(async (req, res) => {
   const post = await getServicePost(req, res); if (!post) return;
   const a = (await getAssignments(post.id)).find(x => x.user_id === req.user.id);
   if (!a) return res.status(403).json({ success: false, error: 'You are not a customer on this post.' });
+  if (a.status === 'assigned') return res.status(409).json({ success: false, error: 'Wait until the provider marks the service as delivered.' });
   if (a.payment_status !== 'unpaid') return res.status(409).json({ success: false, error: 'A payment is already recorded for this booking.' });
 
-  const method = typeof req.body.method === 'string' ? req.body.method : '';
-  if (!PAYMENT_METHODS.includes(method)) {
-    return res.status(400).json({ success: false, error: 'Payments are made by UPI.' });
-  }
-  const reference = typeof req.body.reference === 'string' ? req.body.reference.trim() : '';
-  if (reference.length > 60) return res.status(400).json({ success: false, error: 'Reference must be at most 60 characters.' });
-  if (method === 'upi' && reference.length < 4) return res.status(400).json({ success: false, error: 'Enter the UPI transaction ID so the provider can verify the payment.' });
-
   const { data, error } = await db.from('assignments').update({
-    payment_status: 'paid', payment_method: method, payment_ref: reference || null, paid_at: new Date().toISOString(),
+    payment_status: 'paid', paid_at: new Date().toISOString(),
   }).eq('id', a.id).eq('payment_status', 'unpaid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
-  return res.json({ success: true, message: 'Payment recorded. The provider will confirm it.', post: await postOut(await getPost(post.id), req.user.id) });
+  return res.json({ success: true, message: 'Marked as paid. The provider will confirm it.', post: await postOut(await getPost(post.id), req.user.id) });
 }));
 
 app.post('/api/posts/:id/payment-received', requireAuth, ah(async (req, res) => {
@@ -1103,16 +1068,17 @@ app.post('/api/posts/:id/payment-received', requireAuth, ah(async (req, res) => 
   if (a.payment_status !== 'paid') return res.status(409).json({ success: false, error: 'No payment is waiting to be confirmed.' });
 
   const received = req.body.received !== false; // false = "I did not receive this": the booking goes back to unpaid
+  const now = new Date().toISOString();
   const update = received
-    ? { payment_status: 'confirmed', confirmed_at: new Date().toISOString() }
-    : { payment_status: 'unpaid', payment_method: null, payment_ref: null, paid_at: null };
+    ? { payment_status: 'confirmed', confirmed_at: now, ...(a.status === 'delivered' ? { status: 'completed', completed_at: now } : {}) } // confirming the payment finishes the booking
+    : { payment_status: 'unpaid', paid_at: null };
   const { data, error } = await db.from('assignments').update(update).eq('id', a.id).eq('payment_status', 'paid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
   return res.json({
     success: true,
     message: received ? 'Payment confirmed.' : 'Marked as not received. The customer has been asked to pay again.',
-    post: await postOut(await getPost(post.id), req.user.id),
+    post: await postOut(received ? await syncPostStatus(post.id) : await getPost(post.id), req.user.id),
   });
 }));
 
@@ -1162,7 +1128,7 @@ app.post('/api/posts/:id/withdraw', requireAuth, ah(async (req, res) => {
 
 /**
  * Payment ledger (no money moves through EarnKampus).
- * Poster marks a volunteer paid after paying them directly by UPI;
+ * Poster marks a volunteer paid after paying them directly;
  * the volunteer then confirms they received it.
  */
 app.post('/api/posts/:id/pay', requireAuth, ah(async (req, res) => {

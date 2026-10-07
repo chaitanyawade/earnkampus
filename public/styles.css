@@ -766,7 +766,7 @@ a.vol-name:hover { color: var(--accent-text); }
 }
 
 @media (max-width: 640px) {
-  .navbar { position: static; padding: 10px 12px; }
+  .navbar { position: sticky; top: 6px; padding: 10px 12px; }
   .subtext { display: none; }
   .header-right { gap: 6px; }
   .header-right .btn { min-height: 38px; padding: 6px 12px; }

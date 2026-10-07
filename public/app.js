@@ -276,8 +276,6 @@ function closeAuthRequiredModal() {
 let editingPostId = null; // set while the composer is editing an existing post
 let editingPostType = null;
 
-const METHOD_LABELS = { upi: 'UPI' };
-
 /** "per customer" for services, "per volunteer" for multi-volunteer help requests. */
 function priceNote(p) {
   if (p.type === 'offer') return 'per customer';
@@ -294,8 +292,8 @@ function applyPostTypeUI(type) {
   set('postDetailsInput', el => { el.placeholder = offer ? 'What you offer, and where and when you are available' : 'Where, when, and anything the volunteer should know'; });
   set('postPayHelp', el => {
     el.textContent = offer
-      ? 'Customers pay you directly by UPI. They enter the transaction ID and you confirm when the money arrives. Online payment inside EarnKampus is planned for a later version.'
-      : 'The reward is paid per volunteer. You pay each volunteer directly by UPI. Online payment inside EarnKampus is planned for a later version.';
+      ? 'Customers pay you directly. They mark the payment as sent and you confirm when it arrives. EarnKampus does not handle payments yet.'
+      : 'The reward is paid per volunteer. You pay each volunteer directly. EarnKampus does not handle payments yet.';
   });
 }
 
@@ -848,7 +846,6 @@ function openPostDetail(p) {
   addTag((p.status || '').replace('_', ' '), `status-badge status-${p.status}`);
   if ((p.slotsNeeded || 1) > 1) addTag(`${(p.assignees || []).length}/${p.slotsNeeded} filled`, 'tag-badge');
   if (p.editedAt) addTag('Edited', 'tag-badge');
-  if (p.type === 'offer') addTag('Pay by UPI', 'tag-badge');
 
   const price = document.createElement('div');
   price.className = 'price-pill';
@@ -964,13 +961,6 @@ function buildPostCard(p) {
     filledBadge.className = 'tag-badge';
     filledBadge.textContent = `${(p.assignees || []).length}/${p.slotsNeeded} filled`;
     cardTags.appendChild(filledBadge);
-  }
-
-  if (p.type === 'offer') {
-    const payBadge = document.createElement('span');
-    payBadge.className = 'tag-badge';
-    payBadge.textContent = 'Pay by UPI';
-    cardTags.appendChild(payBadge);
   }
 
   const pricePill = document.createElement('div');
@@ -1398,12 +1388,20 @@ function buildPostActions(p, isAuthor, hasOffered, isAssignedToMe) {
 // Delivery is confirmed by the customer; payment is recorded by the customer and confirmed by the provider.
 
 function serviceStatus(a) {
-  const stage = a.status === 'completed' ? 'Service confirmed' : a.status === 'delivered' ? 'Delivered' : 'Booked';
-  const pay = a.paymentStatus === 'confirmed' ? 'paid' : a.paymentStatus === 'paid' ? 'payment to verify' : 'unpaid';
-  const finished = a.status === 'completed' && a.paymentStatus === 'confirmed';
-  return { text: `${stage}, ${pay}`, tone: finished ? 'ok' : (a.status === 'assigned' ? 'warn' : 'info') };
+  if (a.status === 'completed' && a.paymentStatus === 'confirmed') return { text: 'Completed, paid', tone: 'ok' };
+  if (a.status === 'completed') return { text: a.paymentStatus === 'paid' ? 'Completed, payment to confirm' : 'Completed, unpaid', tone: 'info' };
+  if (a.status === 'delivered') {
+    return a.paymentStatus === 'paid'
+      ? { text: 'Paid, awaiting confirmation', tone: 'info' }
+      : { text: 'Delivered, awaiting payment', tone: 'warn' };
+  }
+  return { text: 'Booked', tone: 'warn' };
 }
 
+/**
+ * One customer on a service post. The order is:
+ *   provider: Mark delivered  ->  customer: Mark payment as sent  ->  provider: Confirm payment received
+ */
 function buildServiceRow(p, a, isAuthor) {
   const row = document.createElement('div');
   row.className = 'vol-row';
@@ -1433,45 +1431,37 @@ function buildServiceRow(p, a, isAuthor) {
   top.appendChild(buildChip(status.text, status.tone));
   row.appendChild(top);
 
-  // What the customer reported paying, so the provider can check it in their UPI app
-  if (a.paymentStatus !== 'unpaid' && a.paymentMethod) {
-    const note = document.createElement('div');
-    note.className = 'vol-note';
-    note.textContent = `Paid by ${METHOD_LABELS[a.paymentMethod] || a.paymentMethod}` + (a.paymentRef ? ` \u00b7 reference ${a.paymentRef}` : '');
-    row.appendChild(note);
-  }
-
   const other = isAuthor ? { id: a.userId, name: a.name } : { id: p.authorId, name: p.author };
   const message = () => openMessagesModal({ id: other.id, name: other.name }, p.title);
   const rate = () => openRatingModal(p.id, other.name, isAuthor ? a.userId : undefined);
-  const finishedService = a.status === 'completed';
+  const finished = a.status === 'completed';
   let primary = null;
   const menu = [];
 
   if (isAuthor) {
     if (a.paymentStatus === 'paid') {
+      // Step 3: the customer says they paid, the provider checks and confirms
       primary = mkBtn('Confirm payment received', 'btn btn-black', '', () => paymentReceived(p.id, a.userId, true));
       menu.push({ label: 'I did not receive this payment', danger: true, onClick: () => paymentReceived(p.id, a.userId, false) });
-      if (a.status === 'assigned') menu.push({ label: 'Mark delivered', onClick: () => deliverService(p.id, a.userId, a.name) });
     } else if (a.status === 'assigned') {
+      // Step 1: deliver the service
       primary = mkBtn('Mark delivered', 'btn btn-black', '', () => deliverService(p.id, a.userId, a.name));
-      if (a.paymentStatus === 'unpaid') menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'reassign', a.userId, a.name) });
-    } else if (finishedService && a.paymentStatus === 'confirmed') {
+      menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'reassign', a.userId, a.name) });
+    } else if (finished && a.paymentStatus === 'confirmed') {
       primary = mkBtn(`Rate ${a.name}`, 'btn btn-black', '', rate);
     }
-    if (finishedService && a.paymentStatus !== 'confirmed') menu.push({ label: `Rate ${a.name}`, onClick: rate });
+    if (finished && a.paymentStatus !== 'confirmed') menu.push({ label: `Rate ${a.name}`, onClick: rate });
     menu.push({ label: `Report ${a.name}`, danger: true, onClick: () => openReportModal(a.userId, a.name, p.id) });
   } else {
-    if (a.status === 'delivered') {
-      primary = mkBtn('Confirm service received', 'btn btn-black', '', () => confirmDelivery(p.id));
-      if (a.paymentStatus === 'unpaid') menu.push({ label: 'Mark payment as sent', onClick: () => openPaymentModal(p) });
-    } else if (a.paymentStatus === 'unpaid') {
-      primary = mkBtn('Mark payment as sent', 'btn btn-black', '', () => openPaymentModal(p));
-      if (a.status === 'assigned') menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'withdraw') });
-    } else if (finishedService) {
+    if ((a.status === 'delivered' || finished) && a.paymentStatus === 'unpaid') {
+      // Step 2: after delivery, the customer marks the payment as sent
+      primary = mkBtn('Mark payment as sent', 'btn btn-black', '', () => markServicePaid(p));
+    } else if (finished && a.paymentStatus === 'confirmed') {
       primary = mkBtn(`Rate ${p.author}`, 'btn btn-black', '', rate);
+    } else if (a.status === 'assigned') {
+      menu.push({ label: 'Cancel booking', onClick: () => changeAssignment(p.id, 'withdraw') });
     }
-    if (finishedService && a.paymentStatus === 'unpaid') menu.push({ label: `Rate ${p.author}`, onClick: rate });
+    if (finished && primary && a.paymentStatus === 'unpaid') menu.push({ label: `Rate ${p.author}`, onClick: rate });
   }
   if (!primary) primary = mkBtn(`Message ${other.name}`, 'btn btn-outline', '', message);
   else menu.push({ label: 'Message', onClick: message });
@@ -1489,52 +1479,17 @@ function deliverService(postId, customerUserId, name) {
   return postAction({ id: postId, action: 'deliver' }, { customerUserId });
 }
 
-function confirmDelivery(postId) {
-  if (!confirm('Confirm that you received the service?')) return;
-  return postAction({ id: postId, action: 'confirm-delivery' }, {});
-}
-
 function paymentReceived(postId, customerUserId, received) {
   const msg = received
-    ? 'Confirm that the money has reached you? Check your UPI app first.'
+    ? 'Confirm that the payment has reached you?'
     : 'Tell the customer you did NOT receive this payment? It goes back to unpaid.';
   if (!confirm(msg)) return;
   return postAction({ id: postId, action: 'payment-received' }, { customerUserId, received });
 }
 
-function openPaymentModal(p) {
-  openTrustModal({
-    title: 'Mark payment as sent',
-    intro: `Pay ${p.author} directly by UPI, then enter the transaction ID so they can check it in their UPI app.`,
-    withScore: false,
-    placeholder: 'UPI transaction ID',
-    submitLabel: 'I have paid',
-    onSubmit: ({ text }) => {
-      const ref = (text || '').trim();
-      if (ref.length < 4) { showToast('Enter the UPI transaction ID.', 'error'); return false; }
-      if (ref.length > 60) { showToast('Transaction ID can be at most 60 characters.', 'error'); return false; }
-      return submitServicePayment(p.id, 'upi', ref);
-    },
-  });
-}
-
-async function submitServicePayment(postId, method, reference) {
-  try {
-    const res = await fetch(`${API_BASE}/posts/${encodeURIComponent(postId)}/payment-sent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ method, reference }),
-    });
-    if (res.status === 401) { clearUserSession(); return false; }
-    const data = await res.json();
-    if (data.success) { showToast(data.message || 'Payment recorded.', 'success'); fetchPosts(); return true; }
-    showToast(data.error || 'Could not record the payment.', 'error');
-    return false;
-  } catch (err) {
-    showToast('Network error. Please try again.', 'error');
-    return false;
-  }
+function markServicePaid(p) {
+  if (!confirm(`Confirm that you received the service and have paid ${p.author} \u20b9${p.price}? Only continue if both are true.`)) return;
+  return postAction({ id: p.id, action: 'payment-sent' }, {});
 }
 
 // ── Trust features: ratings & reports ──────────────────────────────────────────
@@ -1732,7 +1687,6 @@ async function handleCreatePost(e) {
   // Client-side trim; server enforces limits too
   if (!title || title.trim() === '') { showToast('Title is required.', 'error'); return; }
 
-  const paymentMethods = selectedType === 'offer' ? ['upi'] : undefined; // customers pay providers by UPI
 
   try {
     const res = await fetch(`${API_BASE}/posts`, {
@@ -1740,7 +1694,7 @@ async function handleCreatePost(e) {
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       // Do NOT send author/authorId — server derives from session (V3)
-      body: JSON.stringify({ type: selectedType, title, category, price, details, slotsNeeded, paymentMethods }),
+      body: JSON.stringify({ type: selectedType, title, category, price, details, slotsNeeded }),
     });
 
     if (res.status === 401) {
@@ -1859,7 +1813,7 @@ function changeAssignment(postId, action, volunteerUserId, volunteerName) {
 }
 
 function markPaid(postId, volunteerUserId, name, price) {
-  if (!confirm(`Only continue if you have really paid ${name} ₹${price} by UPI. Mark as paid?`)) return;
+  if (!confirm(`Only continue if you have really paid ${name} ₹${price} Mark as paid?`)) return;
   return postAction({ id: postId, action: 'pay' }, { volunteerUserId });
 }
 
