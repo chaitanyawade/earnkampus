@@ -313,6 +313,79 @@ const authLimiter = rateLimit({
   message: { success: false, error: 'Too many attempts. Try again later.' },
 });
 
+// ─── Keep payments on the platform ────────────────────────────────────────────
+// Prices are fixed on the post. These checks stop posts and messages from arranging extra money,
+// cash, phone numbers or payment apps, which would let people skip the platform (and its fee later).
+// A filter cannot catch everything, so it works together with reports ("Asked me to pay outside EarnKampus").
+
+const OFFPLATFORM_LABELS = {
+  contact: 'email addresses or payment IDs',
+  phone: 'phone numbers',
+  link: 'links',
+  app: 'chat or payment apps',
+  bypass: 'payment arrangements outside EarnKampus',
+  amount: 'prices or amounts',
+};
+
+const BYPASS_PHRASES = [
+  /\boutside\s+(?:the\s+)?(?:app|platform|site|website|earnkampus)\b/i,
+  /\boff[\s-]*(?:the[\s-]*)?(?:app|platform)\b/i,
+  /\bwithout\s+(?:the\s+)?(?:app|platform|fees?|commission)\b/i,
+  /\bpay(?:ing)?\s+(?:me\s+|you\s+)?direct(?:ly)?\b/i,
+  /\bdirect\s+pay(?:ment)?\b/i,
+  /\bsave\s+(?:the\s+|your\s+)?(?:fees?|commission|charges?)\b/i,
+  /\bno\s+(?:fees?|commission|charges?)\b/i,
+  /\bcash\b/i,
+  /\b(?:extra|more|additional)\s+(?:money|cash|amount|payment|rupees|rs)\b/i,
+  /\bmore\s+than\s+(?:the\s+)?(?:price|amount|listed|posted|set|mentioned)\b/i,
+  /\b(?:pay|give)\s+(?:you\s+|me\s+)?(?:more|extra)\b/i,
+];
+
+/**
+ * Returns the kinds of off-platform arrangements found in a text, e.g. ['phone', 'bypass'].
+ * strict:true  = posts (also rejects any price written in the text: the price box is the only price)
+ * strict:false = chat (a price is only a problem when it is being negotiated)
+ */
+function offPlatformIssues(text, { strict }) {
+  const flat = String(text || '').replace(/[\u200b-\u200f\u2060\ufeff]/g, ''); // zero-width characters used to dodge filters
+  const squashed = flat.toLowerCase().replace(/[^a-z0-9]/g, '');               // "w h a t s a p p" -> "whatsapp"
+  const found = [];
+  if (/(?:\+?91[\s.\-]*)?[6-9](?:[\s.\-()]*\d){9}/.test(flat)) found.push('phone');
+  if (/[a-z0-9._%+-]{2,}@[a-z0-9.-]{2,}/i.test(flat)) found.push('contact');
+  if (/(?:https?:\/\/|www\.)|\b[a-z0-9-]+\.(?:com|in|me|io|app|co|xyz|link|ly|gl)\b/i.test(flat)) found.push('link');
+  // Payment apps are always a problem. Chat apps only when someone is being asked to use them ("WhatsApp me"),
+  // so a post like "Instagram reel editing help" is fine.
+  const payApp = /(gpay|googlepay|phonepe|paytm)/.test(squashed) || /\b(?:upi|bhim)\b/i.test(flat);
+  const chatApp = /(whatsapp|watsapp|whtsapp|telegram|instagram|snapchat)/.test(squashed) || /\binsta\b/i.test(flat);
+  const contactIntent = /\b(me|on|at|via|dm|dms|contact|call|text|ping|add|id|handle|number|reach|chat|message|msg|send|use)\b/i.test(flat);
+  if (payApp || (chatApp && contactIntent)) found.push('app');
+  if (BYPASS_PHRASES.some(rx => rx.test(flat))) found.push('bypass');
+  const hasAmount = /(?:₹|\brs\.?|\binr\b|rupees?)\s?\d|\d\s?(?:₹|\brs\b|rupees?)/i.test(flat);
+  if (hasAmount && (strict || /\b(extra|more|less|instead|discount|negotiat\w*|bargain|tip|bonus|on top|additional|double|half)\b/i.test(flat))) found.push('amount');
+  return found;
+}
+
+function offPlatformMessage(issues, where) {
+  const list = issues.map(i => OFFPLATFORM_LABELS[i]).join(', ');
+  return where === 'post'
+    ? `Your post can't include ${list}. Put the price in the price box, and keep contact details and payment arrangements out of the text. Payments must stay on EarnKampus.`
+    : `Your message can't include ${list}. Payments must stay on EarnKampus at the price listed on the post.`;
+}
+
+/** Phone numbers may be shared in chat once the two people have a booking together. */
+async function haveBookingTogether(userA, userB) {
+  for (const [provider, customer] of [[userA, userB], [userB, userA]]) {
+    const { data: mine, error } = await db.from('assignments').select('post_id').eq('user_id', customer);
+    if (error) throw error;
+    const ids = mine.map(a => a.post_id).filter(id => /^[A-Za-z0-9_]+$/.test(id)).slice(0, 100);
+    if (!ids.length) continue;
+    const { data: posts, error: e2 } = await db.from('posts').select('id').in('id', ids).eq('author_id', provider).limit(1);
+    if (e2) throw e2;
+    if (posts.length) return true;
+  }
+  return false;
+}
+
 /** Per-logged-in-user limit for actions that could be used to spam others. */
 function userLimiter(max, windowMs, what) {
   return rateLimit({
@@ -832,6 +905,8 @@ app.post('/api/posts', requireAuth, postLimiter, ah(async (req, res) => {
   if (titleErr) return res.status(400).json({ success: false, error: titleErr });
   const detailsErr = validateString(details, 'Details', LIMITS.details, false);
   if (detailsErr) return res.status(400).json({ success: false, error: detailsErr });
+  const postIssues = offPlatformIssues(`${title}\n${details || ''}`, { strict: true });
+  if (postIssues.length) return res.status(400).json({ success: false, error: offPlatformMessage(postIssues, 'post') });
 
   const cleanCategory = typeof category === 'string' && VALID_CATEGORIES.includes(category) ? category : 'Other';
   const priceNum = Number(price);
@@ -911,6 +986,8 @@ app.put('/api/posts/:id', requireAuth, ah(async (req, res) => {
     if (slotsNum < asg.length) return res.status(400).json({ success: false, error: `${asg.length} volunteer(s) are already assigned, so you need at least ${asg.length}.` });
     updates.slots_needed = slotsNum;
   }
+  const editIssues = offPlatformIssues(`${updates.title || ''}\n${updates.details || ''}`, { strict: true });
+  if (editIssues.length) return res.status(400).json({ success: false, error: offPlatformMessage(editIssues, 'post') });
   if (!Object.keys(updates).length) return res.status(400).json({ success: false, error: 'Nothing to change.' });
 
   const offersCleared = updates.price !== undefined && updates.price !== post.price && (post.interested_users || []).length > 0;
@@ -1215,7 +1292,7 @@ app.post('/api/posts/:id/rate', requireAuth, ah(async (req, res) => {
   return res.status(201).json({ success: true, message: 'Thanks for rating.' });
 }));
 
-const REPORT_CATEGORIES = ['scam', 'no_show', 'harassment', 'fake_post', 'inappropriate', 'other'];
+const REPORT_CATEGORIES = ['scam', 'no_show', 'harassment', 'fake_post', 'inappropriate', 'off_platform', 'other'];
 
 /** POST /api/reports — report a user, with a cause (and details, required for 'other') */
 app.post('/api/reports', requireAuth, reportLimiter, ah(async (req, res) => {
@@ -1278,6 +1355,12 @@ app.post('/api/messages', requireAuth, messageLimiter, ah(async (req, res) => {
   if (!receiverId || typeof receiverId !== 'string') return res.status(400).json({ success: false, error: 'receiverId is required.' });
   const textErr = validateString(text, 'Message text', LIMITS.message);
   if (textErr) return res.status(400).json({ success: false, error: textErr });
+  let chatIssues = offPlatformIssues(text, { strict: false });
+  if (chatIssues.includes('phone') && await haveBookingTogether(req.user.id, receiverId)) chatIssues = chatIssues.filter(i => i !== 'phone');
+  if (chatIssues.length) {
+    const extra = chatIssues.includes('phone') ? ' Phone numbers can be shared once a booking is accepted.' : '';
+    return res.status(400).json({ success: false, error: offPlatformMessage(chatIssues, 'chat') + extra });
+  }
   if (receiverId === req.user.id) return res.status(400).json({ success: false, error: 'Cannot send a message to yourself.' });
 
   const { data: receiver, error: e1 } = await db.from('users').select('id,name,college').eq('id', receiverId).maybeSingle();

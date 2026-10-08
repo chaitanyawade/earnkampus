@@ -1602,6 +1602,7 @@ const REPORT_CATEGORIES = [
   ['harassment', 'Harassment or rude behaviour'],
   ['fake_post', 'Fake or misleading post'],
   ['inappropriate', 'Inappropriate content'],
+  ['off_platform', 'Asked me to pay outside EarnKampus or pay extra'],
   ['other', 'Other (please explain)'],
 ];
 

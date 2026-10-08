@@ -628,6 +628,7 @@ a.vol-name:hover { color: var(--accent-text); }
 .chat-bubble.received { align-self: flex-start; background: var(--bubble-in); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 .msg-time { align-self: flex-end; font-size: 11px; opacity: 0.7; }
 
+.chat-notice { padding: 8px 14px; font-size: 12.5px; color: var(--muted); background: var(--surface-2); border-top: 1px solid var(--line); }
 .chat-input-area { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
 .chat-input-area input { flex: 1; min-width: 0; }
 
