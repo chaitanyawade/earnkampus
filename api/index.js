@@ -1026,6 +1026,8 @@ app.post('/api/posts/:id/offer', requireAuth, offerLimiter, ah(async (req, res) 
 
   const { data, error } = await db.from('posts').update({ interested_users: list }).eq('id', post.id).eq('status', 'open').select('*').single();
   if (error) throw error;
+  await notify(post.author_id, 'request', post.type === 'offer' ? 'New service request' : 'New offer to help',
+    `${req.user.name} ${post.type === 'offer' ? 'requested your service' : 'offered to help'} on "${post.title}".`, post.id);
   return res.json({ success: true, message: 'Offer submitted successfully.', post: await postOut(data, req.user.id) });
 }));
 
@@ -1053,6 +1055,8 @@ app.post('/api/posts/:id/assign', requireAuth, ah(async (req, res) => {
     if (error.code === '23505') return res.status(409).json({ success: false, error: 'That volunteer is already assigned.' });
     throw error;
   }
+  await notify(volunteer.userId, 'accepted', post.type === 'offer' ? 'Your request was accepted' : 'You were accepted',
+    `${req.user.name} accepted you for "${post.title}".`, post.id);
   const fresh = await syncPostStatus(post.id);
   return res.json({ success: true, message: `${volunteer.name} assigned.`, post: await postOut(fresh, req.user.id) });
 }));
@@ -1089,6 +1093,7 @@ app.post('/api/posts/:id/complete', requireAuth, ah(async (req, res) => {
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Task changed. Please refresh.' });
 
+  await notify(a.user_id, 'done', 'Your work was marked done', `${req.user.name} marked your work on "${post.title}" as done.`, post.id);
   const fresh = await syncPostStatus(post.id);
   return res.json({ success: true, message: `${a.user_name}'s work marked complete.`, post: await postOut(fresh, req.user.id) });
 }));
@@ -1119,7 +1124,8 @@ app.post('/api/posts/:id/deliver', requireAuth, ah(async (req, res) => {
     .eq('id', a.id).eq('status', 'assigned').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
-  return res.json({ success: true, message: `Marked as delivered. ${a.user_name} will be asked to confirm.`, post: await postOut(await syncPostStatus(post.id), req.user.id) });
+  await notify(a.user_id, 'delivered', 'Service delivered', `${req.user.name} marked "${post.title}" as delivered. Please mark your payment as sent.`, post.id);
+  return res.json({ success: true, message: `Marked as delivered. ${a.user_name} will be asked to mark payment as sent.`, post: await postOut(await syncPostStatus(post.id), req.user.id) });
 }));
 
 app.post('/api/posts/:id/payment-sent', requireAuth, ah(async (req, res) => {
@@ -1134,6 +1140,7 @@ app.post('/api/posts/:id/payment-sent', requireAuth, ah(async (req, res) => {
   }).eq('id', a.id).eq('payment_status', 'unpaid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
+  await notify(post.author_id, 'payment', 'Payment marked as sent', `${req.user.name} says they paid ₹${post.price} for "${post.title}". Please check and confirm it.`, post.id);
   return res.json({ success: true, message: 'Marked as paid. The provider will confirm it.', post: await postOut(await getPost(post.id), req.user.id) });
 }));
 
@@ -1152,6 +1159,10 @@ app.post('/api/posts/:id/payment-received', requireAuth, ah(async (req, res) => 
   const { data, error } = await db.from('assignments').update(update).eq('id', a.id).eq('payment_status', 'paid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Booking changed. Please refresh.' });
+  await notify(a.user_id, 'payment', received ? 'Payment confirmed' : 'Payment not received',
+    received
+      ? `${req.user.name} confirmed your payment for "${post.title}". The booking is complete.`
+      : `${req.user.name} did not receive your payment for "${post.title}". Please pay again and mark it as sent.`, post.id);
   return res.json({
     success: true,
     message: received ? 'Payment confirmed.' : 'Marked as not received. The customer has been asked to pay again.',
@@ -1186,6 +1197,7 @@ app.post('/api/posts/:id/reassign', requireAuth, ah(async (req, res) => {
 
   const fresh = await releaseVolunteer(post, a, 'reassigned');
   if (!fresh) return res.status(409).json({ success: false, error: 'Task changed. Please refresh.' });
+  await notify(a.user_id, 'removed', post.type === 'offer' ? 'Booking cancelled' : 'Removed from a task', `${req.user.name} removed you from "${post.title}".`, post.id);
   return res.json({ success: true, message: 'Slot reopened. Choose another volunteer.', post: await postOut(fresh, req.user.id) });
 }));
 
@@ -1200,6 +1212,7 @@ app.post('/api/posts/:id/withdraw', requireAuth, ah(async (req, res) => {
 
   const fresh = await releaseVolunteer(post, a, 'withdrawn');
   if (!fresh) return res.status(409).json({ success: false, error: 'Task changed. Please refresh.' });
+  await notify(post.author_id, 'withdrawn', 'Someone withdrew', `${req.user.name} withdrew from "${post.title}".`, post.id);
   return res.json({ success: true, message: 'You withdrew from this task.', post: await postOut(fresh, req.user.id) });
 }));
 
@@ -1224,6 +1237,7 @@ app.post('/api/posts/:id/pay', requireAuth, ah(async (req, res) => {
     .eq('id', a.id).eq('payment_status', 'unpaid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Task changed. Please refresh.' });
+  await notify(a.user_id, 'payment', 'Payment marked as sent', `${req.user.name} marked ₹${post.price} as paid for "${post.title}". Please confirm you received it.`, post.id);
   return res.json({ success: true, message: `Marked ${a.user_name} as paid ₹${post.price}.`, post: await postOut(await getPost(post.id), req.user.id) });
 }));
 
@@ -1240,6 +1254,7 @@ app.post('/api/posts/:id/confirm-payment', requireAuth, ah(async (req, res) => {
     .eq('id', a.id).eq('payment_status', 'paid').select('id');
   if (error) throw error;
   if (!data.length) return res.status(409).json({ success: false, error: 'Task changed. Please refresh.' });
+  await notify(post.author_id, 'payment', 'Payment confirmed', `${req.user.name} confirmed they received ₹${post.price} for "${post.title}".`, post.id);
   return res.json({ success: true, message: 'Payment confirmed. Thanks!', post: await postOut(await getPost(post.id), req.user.id) });
 }));
 
@@ -1289,6 +1304,7 @@ app.post('/api/posts/:id/rate', requireAuth, ah(async (req, res) => {
     if (error.code === '23505') return res.status(409).json({ success: false, error: 'You already rated this person for this task.' });
     throw error;
   }
+  await notify(rateeId, 'rating', 'You received a rating', `${req.user.name} rated you ${score} out of 5 on "${post.title}".`, post.id);
   return res.status(201).json({ success: true, message: 'Thanks for rating.' });
 }));
 
@@ -1319,6 +1335,51 @@ app.post('/api/reports', requireAuth, reportLimiter, ah(async (req, res) => {
   });
   if (error) throw error;
   return res.status(201).json({ success: true, message: 'Report submitted. We will review it.' });
+}));
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+/** Tell someone about something that happened to their task or payment. Never breaks the action that caused it. */
+async function notify(userId, type, title, body, postId) {
+  if (!userId) return;
+  try {
+    const { error } = await db.from('notifications').insert({
+      id: genId('n'),
+      user_id: userId,
+      type,
+      title: String(title).slice(0, 120),
+      body: body ? String(body).slice(0, 300) : null,
+      post_id: postId || null,
+    });
+    if (error) console.error('notify failed:', error.message);
+  } catch (err) {
+    console.error('notify failed:', err.message || err);
+  }
+}
+
+app.get('/api/notifications', requireAuth, ah(async (req, res) => {
+  const { data, error } = await db.from('notifications').select('*')
+    .eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50);
+  if (error) throw error;
+  const { count, error: e2 } = await db.from('notifications').select('id', { count: 'exact', head: true })
+    .eq('user_id', req.user.id).is('read_at', null);
+  if (e2) throw e2;
+  return res.json({
+    success: true,
+    unread: count || 0,
+    notifications: data.map(n => ({
+      id: n.id, type: n.type, title: n.title, body: n.body, postId: n.post_id, createdAt: n.created_at, read: !!n.read_at,
+    })),
+  });
+}));
+
+/** Mark all of my notifications read (or one, with { id }). */
+app.post('/api/notifications/read', requireAuth, ah(async (req, res) => {
+  let q = db.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', req.user.id).is('read_at', null);
+  if (typeof req.body.id === 'string' && req.body.id.length <= 100) q = q.eq('id', req.body.id);
+  const { error } = await q;
+  if (error) throw error;
+  return res.json({ success: true });
 }));
 
 // ─── Messages ─────────────────────────────────────────────────────────────────

@@ -787,8 +787,8 @@ a.vol-name:hover { color: var(--accent-text); }
 
   input[type="text"], input[type="email"], input[type="password"], input[type="number"], select, textarea { font-size: 16px; }
 
-  .modal-overlay { align-items: flex-end; padding: 0; }
-  .modal-box { max-height: 94vh; padding: 20px; border-radius: 22px 22px 0 0; }
+  .modal-overlay { align-items: center; padding: 14px; }
+  .modal-box { max-height: calc(100vh - 28px); padding: 20px; border-radius: 22px; }
   .modal-actions .btn { flex: 1; }
   .toast-container { left: 12px; right: 12px; bottom: 80px; }
   body { padding-bottom: 88px; }
@@ -876,7 +876,7 @@ html[data-theme="dark"] .menu-list { box-shadow: 0 16px 32px -12px rgba(0, 0, 0,
 
 @supports (height: 100dvh) {
   @media (max-width: 640px) {
-    .modal-box { max-height: 94dvh; }
+    .modal-box { max-height: calc(100dvh - 28px); }
     .chat-modal-box { height: min(86dvh, 600px); }
   }
 }
@@ -899,4 +899,126 @@ html[data-theme="dark"] .menu-list { box-shadow: 0 16px 32px -12px rgba(0, 0, 0,
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* ==========================================================================
+   Icon buttons, notifications, and the phone messages layout
+   ========================================================================== */
+
+.icon-btn {
+  position: relative;
+  width: 40px; height: 40px; flex: none;
+  display: inline-grid; place-items: center;
+  padding: 0;
+  color: var(--btn-ink);
+  background: var(--btn-bg);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-ctl);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--btn-hover); border-color: var(--v400); }
+.icon-btn::before,
+.msg-btn::before {
+  content: "";
+  width: 20px; height: 20px;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / contain no-repeat;
+  mask: var(--icon) center / contain no-repeat;
+}
+.icon-bell {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/%3E%3Cpath d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/%3E%3C/svg%3E");
+}
+.msg-btn {
+  --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-5.4A8 8 0 1 1 21 12z'/%3E%3C/svg%3E");
+  position: relative;
+}
+.msg-btn::before { display: none; }          /* desktop shows the word "Messages" */
+.icon-btn .unread-pill { position: absolute; top: -7px; right: -7px; margin: 0; }
+
+/* Notification list */
+.notif-box { max-width: 460px; }
+.notif-list { display: flex; flex-direction: column; max-height: 62vh; overflow-y: auto; margin: 0 -8px; }
+.notif-item {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 12px 8px;
+  text-align: left; font: inherit; color: var(--ink);
+  background: none; border: none; border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.notif-item:last-child { border-bottom: 0; }
+.notif-item:hover { background: var(--accent-soft); }
+.notif-dot { flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: transparent; }
+.notif-item.unread .notif-dot { background: var(--v600); }
+.notif-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.notif-title { font-size: 14.5px; font-weight: 600; }
+.notif-item.unread .notif-title { font-weight: 750; }
+.notif-body { font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.notif-time { font-size: 12px; color: var(--muted); }
+.notif-empty { padding: 28px 8px; text-align: center; font-size: 14px; color: var(--muted); }
+
+/* Jump-to highlight for a post opened from a notification */
+@keyframes post-flash { 0%, 55% { box-shadow: 0 0 0 3px var(--v500), var(--glass-shadow); } 100% { box-shadow: var(--glass-shadow); } }
+.post-flash { animation: post-flash 2.2s ease-out; }
+
+/* Conversation list rows */
+.contact-item { justify-content: space-between; }
+.contact-info { flex: 1; }
+.contact-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-back { display: none; }
+.chat-thread-header { display: flex; align-items: center; gap: 8px; }
+
+@media (max-width: 640px) {
+  .icon-btn { width: 36px; height: 36px; }
+  .msg-btn { width: 36px; height: 36px; padding: 0; }
+  .msg-btn::before { display: block; }
+  .msg-label { display: none; }
+  .msg-btn .unread-pill { position: absolute; top: -7px; right: -7px; margin: 0; }
+}
+
+/* Messages on a phone: full screen, one pane at a time (conversation list, then the conversation) */
+@media (max-width: 760px) {
+  #messagesModal { padding: 0; align-items: stretch; }
+  .chat-modal-box {
+    width: 100%; max-width: none;
+    height: 100vh; max-height: none;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    gap: 10px;
+    border-radius: 0;
+  }
+  .chat-container { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
+  .chat-contacts { max-height: none; border-right: 0; border-bottom: 0; }
+  .chat-main { display: none; }
+  .chat-container.has-thread .chat-contacts { display: none; }
+  .chat-container.has-thread .chat-main { display: flex; }
+  .contact-item { padding: 14px; }
+  .chat-back {
+    display: inline-grid; place-items: center;
+    flex: none; width: 36px; height: 36px;
+    font-size: 20px; line-height: 1; color: var(--ink);
+    background: transparent; border: none; border-radius: 50%; cursor: pointer;
+  }
+  .chat-back:hover { background: var(--accent-soft); }
+  .chat-thread-header { padding: 8px 10px; }
+  .chat-notice { padding: 6px 12px; font-size: 12px; }
+  .chat-input-area { padding: 10px; }
+  .chat-input-area input { font-size: 16px; }
+  .chat-input-area .btn { flex: none; }
+}
+@supports (height: 100dvh) {
+  @media (max-width: 760px) { .chat-modal-box { height: 100dvh; } }
+}
+
+/* Phone top bar: the .btn padding was squeezing the Messages icon, so all icon buttons are sized explicitly */
+@media (max-width: 640px) {
+  .header-right .icon-btn,
+  .header-right .msg-btn,
+  .header-right .theme-toggle {
+    box-sizing: border-box;
+    width: 36px; height: 36px; min-width: 36px; min-height: 36px;
+    padding: 0; gap: 0;
+    align-items: center; justify-content: center;
+  }
+  .header-right .msg-btn .msg-label { display: none; }
+  .header-right .msg-btn::before { display: block; flex: none; width: 20px; height: 20px; }
+  .brand h1 { overflow: hidden; text-overflow: ellipsis; }
 }

@@ -26,8 +26,11 @@
         <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch to dark mode" title="Switch to dark mode"></button>
         <button class="btn btn-black" id="openComposerBtn">+ Create post</button>
 
-        <button class="btn btn-outline" id="navMessagesBtn" style="display: none;">
-          Messages <span id="unreadBadge" class="unread-pill" style="display:none;">0</span>
+        <button class="icon-btn icon-bell" id="navNotifBtn" type="button" style="display: none;" aria-label="Notifications" title="Notifications">
+          <span id="notifBadge" class="unread-pill" style="display:none;">0</span>
+        </button>
+        <button class="btn btn-outline msg-btn" id="navMessagesBtn" style="display: none;" aria-label="Messages" title="Messages">
+          <span class="msg-label">Messages</span> <span id="unreadBadge" class="unread-pill" style="display:none;">0</span>
         </button>
         <a href="auth.html?tab=login" class="btn btn-outline nav-auth-link" id="navLoginBtn">Log in</a>
         <a href="auth.html?tab=signup" class="btn btn-black nav-auth-link" id="navSignupBtn">Sign up</a>
@@ -151,6 +154,17 @@
     </div>
   </div>
 
+  <!-- Notifications -->
+  <div class="modal-overlay" id="notifModal" hidden>
+    <div class="modal-box notif-box" role="dialog" aria-modal="true" aria-labelledby="notifTitle">
+      <div class="modal-header">
+        <h3 id="notifTitle">Notifications</h3>
+        <button class="close-btn" id="closeNotifBtn" aria-label="Close">&times;</button>
+      </div>
+      <div class="notif-list" id="notifList"></div>
+    </div>
+  </div>
+
   <!-- Messages -->
   <div class="modal-overlay" id="messagesModal" hidden>
     <div class="modal-box chat-modal-box">
@@ -167,6 +181,7 @@
 
         <div class="chat-main">
           <div class="chat-thread-header" id="chatThreadHeader">
+            <button type="button" class="chat-back" id="chatBackBtn" aria-label="Back to conversations">&larr;</button>
             <span id="chatActiveUser">Select a student to message</span>
           </div>
 

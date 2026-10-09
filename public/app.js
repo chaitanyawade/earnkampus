@@ -49,6 +49,8 @@ async function initApp() {
   await fetchPosts();
   if (currentState.currentUser.isLoggedIn) {
     await fetchMessages();
+    await fetchNotifications();
+    startNotificationPolling();
   }
 }
 
@@ -125,6 +127,7 @@ function updateUserUI() {
   const signupBtn = document.getElementById('navSignupBtn');
   const logoutBtn = document.getElementById('navLogoutBtn');
   const messagesBtn = document.getElementById('navMessagesBtn');
+  const notifBtn = document.getElementById('navNotifBtn');
 
   const pill = document.getElementById('userPill');
   const shownName = currentState.currentUser.name || 'Guest';
@@ -139,11 +142,13 @@ function updateUserUI() {
     if (signupBtn) signupBtn.style.display = 'none';
     if (logoutBtn) logoutBtn.style.display = 'inline-flex';
     if (messagesBtn) messagesBtn.style.display = 'inline-flex';
+    if (notifBtn) notifBtn.style.display = 'inline-grid';
   } else {
     if (loginBtn) loginBtn.style.display = 'inline-flex';
     if (signupBtn) signupBtn.style.display = 'inline-flex';
     if (logoutBtn) logoutBtn.style.display = 'none';
     if (messagesBtn) messagesBtn.style.display = 'none';
+    if (notifBtn) notifBtn.style.display = 'none';
   }
 }
 
@@ -455,26 +460,35 @@ function updateUnreadBadge() {
   }
 }
 
+const extraContacts = new Map(); // people you opened a chat with before any message exists (post "Message" buttons)
+const isPhoneChat = () => window.matchMedia('(max-width: 760px)').matches;
+
 function openMessagesModal(targetUser = null, prefillContext = '') {
   if (!currentState.currentUser.isLoggedIn) {
     showAuthRequiredModal('Please log in to send direct messages to campus members.');
     return;
   }
+  if (targetUser && targetUser.id === currentState.currentUser.id) return;
 
   const modal = document.getElementById('messagesModal');
   if (modal) modal.hidden = false;
 
+  if (targetUser) {
+    // Keep this person in the conversation list even before the first message, and forget any earlier chat
+    extraContacts.set(targetUser.id, { id: targetUser.id, name: targetUser.name, avatar: '', addedAt: Date.now() });
+    currentState.activeChatUser = null;
+  }
+
   fetchMessages().then(() => {
     renderContactsList(targetUser ? targetUser.id : null);
     if (targetUser) {
-      selectContact(targetUser);
+      selectContact(extraContacts.get(targetUser.id));
       if (prefillContext) {
         const input = document.getElementById('chatInputText');
-        if (input) {
-          // Use textContent assignment, not innerHTML
-          input.value = `Hi ${targetUser.name}, regarding your post "${prefillContext}": `;
-        }
+        if (input) input.value = `Hi ${targetUser.name}, about "${prefillContext}": `; // value, not innerHTML
       }
+    } else if (isPhoneChat()) {
+      showChatList(); // on a phone, start from the list of conversations
     } else {
       const contacts = getContactsList();
       if (contacts.length > 0) selectContact(contacts[0]);
@@ -482,60 +496,91 @@ function openMessagesModal(targetUser = null, prefillContext = '') {
   });
 }
 
+/** Phone layout: go back from a conversation to the list. */
+function showChatList() {
+  currentState.activeChatUser = null;
+  const container = document.querySelector('.chat-container');
+  if (container) container.classList.remove('has-thread');
+  const form = document.getElementById('sendMessageForm');
+  if (form) form.hidden = true;
+  const header = document.getElementById('chatActiveUser');
+  if (header) header.textContent = 'Select a student to message';
+  renderContactsList();
+  renderChatThread();
+}
+
 function closeMessagesModal() {
   const modal = document.getElementById('messagesModal');
   if (modal) modal.hidden = true;
+  const container = document.querySelector('.chat-container');
+  if (container) container.classList.remove('has-thread');
+  currentState.activeChatUser = null;
 }
 
 function getContactsList() {
-  // Build contact list from actual messages only (no hardcoded default users)
+  const me = currentState.currentUser.id;
   const map = new Map();
+  const touch = (id, name, time) => {
+    if (!id || id === me) return;
+    const cur = map.get(id) || { id, name, avatar: '', last: 0 };
+    if (time > cur.last) cur.last = time;
+    if (!cur.name && name) cur.name = name;
+    map.set(id, cur);
+  };
 
   currentState.messages.forEach(m => {
-    const otherId = m.senderId === currentState.currentUser.id ? m.receiverId : m.senderId;
-    const otherName = m.senderId === currentState.currentUser.id ? m.receiverName : m.senderName;
-    if (otherId && otherId !== currentState.currentUser.id && !map.has(otherId)) {
-      map.set(otherId, { id: otherId, name: otherName, avatar: '' });
-    }
+    const mine = m.senderId === me;
+    touch(mine ? m.receiverId : m.senderId, mine ? m.receiverName : m.senderName, new Date(m.timestamp).getTime() || 0);
   });
+  extraContacts.forEach(c => touch(c.id, c.name, c.addedAt));            // chats opened from a post
+  currentState.posts.forEach(p => { if (p.authorId) touch(p.authorId, p.author, 0); }); // people you can message from the feed
 
-  // Also include users from current posts (for "Message" button on post cards)
-  currentState.posts.forEach(p => {
-    if (p.authorId && p.authorId !== currentState.currentUser.id && !map.has(p.authorId)) {
-      map.set(p.authorId, { id: p.authorId, name: p.author, avatar: '' });
-    }
-  });
-
-  return Array.from(map.values());
+  return Array.from(map.values()).sort((x, y) => y.last - x.last);       // most recent conversation first
 }
 
 function renderContactsList(selectedUserId = null) {
   const contactsList = document.getElementById('contactsList');
   if (!contactsList) return;
 
-  const contacts = getContactsList();
-  contactsList.innerHTML = '';
+  const me = currentState.currentUser.id;
+  const info = new Map(); // per person: last message and number of unread messages
+  currentState.messages.forEach(m => {
+    const mine = m.senderId === me;
+    const other = mine ? m.receiverId : m.senderId;
+    const rec = info.get(other) || { text: '', time: -1, unread: 0 };
+    const t = new Date(m.timestamp).getTime() || 0;
+    if (t >= rec.time) { rec.time = t; rec.text = (mine ? 'You: ' : '') + m.text; }
+    if (!mine && !m.readAt) rec.unread += 1;
+    info.set(other, rec);
+  });
 
-  contacts.forEach(c => {
+  const activeId = currentState.activeChatUser ? currentState.activeChatUser.id : selectedUserId;
+  contactsList.textContent = '';
+
+  getContactsList().forEach(c => {
     const div = document.createElement('div');
-    const isActive = c.id === (currentState.activeChatUser ? currentState.activeChatUser.id : selectedUserId);
-    div.className = `contact-item ${isActive ? 'active' : ''}`;
+    div.className = `contact-item ${c.id === activeId ? 'active' : ''}`;
     div.addEventListener('click', () => selectContact(c));
-
-    const avatarSpan = document.createElement('span');
-    avatarSpan.className = 'contact-avatar';
-    avatarSpan.textContent = c.avatar || '';
 
     const infoDiv = document.createElement('div');
     infoDiv.className = 'contact-info';
-
     const nameSpan = document.createElement('span');
     nameSpan.className = 'contact-name';
-    nameSpan.textContent = c.name; // textContent — not innerHTML (V8)
-
+    nameSpan.textContent = c.name; // textContent, not innerHTML (V8)
+    const sub = document.createElement('span');
+    sub.className = 'contact-sub';
+    const rec = info.get(c.id);
+    sub.textContent = rec ? rec.text : 'No messages yet';
     infoDiv.appendChild(nameSpan);
-    div.appendChild(avatarSpan);
+    infoDiv.appendChild(sub);
     div.appendChild(infoDiv);
+
+    if (rec && rec.unread > 0) {
+      const pill = document.createElement('span');
+      pill.className = 'unread-pill';
+      pill.textContent = String(rec.unread);
+      div.appendChild(pill);
+    }
     contactsList.appendChild(div);
   });
 }
@@ -547,14 +592,22 @@ function selectContact(user) {
 
   const activeUserHeader = document.getElementById('chatActiveUser');
   if (activeUserHeader) {
-    activeUserHeader.textContent = `Chatting with ${user.name}`; // textContent (V8)
+    activeUserHeader.textContent = user.name; // textContent (V8)
   }
 
   const sendMessageForm = document.getElementById('sendMessageForm');
   if (sendMessageForm) sendMessageForm.hidden = false;
 
+  const container = document.querySelector('.chat-container');
+  if (container) container.classList.add('has-thread'); // phone layout: show the conversation, hide the list
+
   renderChatThread();
 }
+
+(function setupChatBack() {
+  const back = document.getElementById('chatBackBtn');
+  if (back) back.addEventListener('click', showChatList);
+})();
 
 function renderChatThread() {
   const body = document.getElementById('chatMessagesBody');
@@ -763,7 +816,7 @@ function switchTab(tab) {
   const feedHeading = document.getElementById('feedHeading');
   if (feedHeading) feedHeading.textContent = headings[tab] || headings.need;
 
-  fetchPosts();
+  return fetchPosts();
 }
 
 function renderPosts() {
@@ -931,6 +984,7 @@ function buildPostCard(p) {
 
   const card = document.createElement('div');
   card.className = 'post-card';
+  card.dataset.postId = p.id;
 
   // Header: category + status on the left, reward on the right (DOM, never innerHTML: V8)
   const cardTop = document.createElement('div');
@@ -1875,6 +1929,138 @@ function showToast(message, type = 'info') {
   }, 3500);
 }
 
+
+// ── Notifications ───────────────────────────────────────────────────────────
+
+const notifState = { items: [], unread: 0, pollTimer: null, loadedOnce: false };
+
+function updateNotifBadge() {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  if (notifState.unread > 0) {
+    badge.textContent = notifState.unread > 9 ? '9+' : String(notifState.unread);
+    badge.style.display = 'inline';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+async function fetchNotifications() {
+  if (!currentState.currentUser.isLoggedIn) return;
+  try {
+    const res = await fetch(`${API_BASE}/notifications`, { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.success) return;
+
+    const grew = data.unread > notifState.unread;
+    notifState.items = data.notifications;
+    notifState.unread = data.unread;
+    updateNotifBadge();
+
+    if (grew && notifState.loadedOnce) {
+      const newest = data.notifications.find(n => !n.read);
+      if (newest) showToast(newest.title, 'info');
+    }
+    notifState.loadedOnce = true;
+
+    const modal = document.getElementById('notifModal');
+    if (modal && !modal.hidden) renderNotifications();
+  } catch (err) { /* offline: the next check will try again */ }
+}
+
+function startNotificationPolling() {
+  if (notifState.pollTimer) return;
+  notifState.pollTimer = setInterval(() => { if (!document.hidden) fetchNotifications(); }, 45000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fetchNotifications(); });
+}
+
+function renderNotifications() {
+  const list = document.getElementById('notifList');
+  if (!list) return;
+  list.textContent = '';
+
+  if (!notifState.items.length) {
+    const empty = document.createElement('p');
+    empty.className = 'notif-empty';
+    empty.textContent = 'Nothing yet. Updates about your tasks, orders and payments will appear here.';
+    list.appendChild(empty);
+    return;
+  }
+
+  notifState.items.forEach(n => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'notif-item' + (n.read ? '' : ' unread');
+
+    const dot = document.createElement('span');
+    dot.className = 'notif-dot';
+    const text = document.createElement('div');
+    text.className = 'notif-text';
+    const title = document.createElement('span');
+    title.className = 'notif-title';
+    title.textContent = n.title; // textContent (V8)
+    const body = document.createElement('span');
+    body.className = 'notif-body';
+    body.textContent = n.body || '';
+    const time = document.createElement('span');
+    time.className = 'notif-time';
+    time.textContent = formatPostedDate(n.createdAt);
+    text.appendChild(title);
+    if (n.body) text.appendChild(body);
+    text.appendChild(time);
+
+    item.appendChild(dot);
+    item.appendChild(text);
+    item.addEventListener('click', () => openNotificationTarget(n));
+    list.appendChild(item);
+  });
+}
+
+function openNotifications() {
+  const modal = document.getElementById('notifModal');
+  if (!modal) return;
+  renderNotifications();
+  modal.hidden = false;
+  if (notifState.unread > 0) {
+    notifState.unread = 0; // they are being read now
+    updateNotifBadge();
+    fetch(`${API_BASE}/notifications/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({}),
+    }).catch(() => {});
+  }
+}
+
+function closeNotifications() {
+  const modal = document.getElementById('notifModal');
+  if (modal) modal.hidden = true;
+}
+
+/** Take the user to the post a notification is about (finished tasks only live in My tasks). */
+async function openNotificationTarget(n) {
+  closeNotifications();
+  if (!n.postId) return;
+  if (currentState.currentTab !== 'mine') await switchTab('mine'); else await fetchPosts();
+  const card = Array.from(document.querySelectorAll('.post-card')).find(c => c.dataset.postId === n.postId);
+  if (!card) { showToast('That post is no longer available.', 'error'); return; }
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('post-flash');
+  setTimeout(() => card.classList.remove('post-flash'), 2400);
+}
+
+(function setupNotificationUI() {
+  const btn = document.getElementById('navNotifBtn');
+  if (btn) btn.addEventListener('click', openNotifications);
+  const modal = document.getElementById('notifModal');
+  if (!modal) return;
+  const closeBtn = document.getElementById('closeNotifBtn');
+  if (closeBtn) closeBtn.addEventListener('click', closeNotifications);
+  modal.addEventListener('click', e => { if (e.target === modal) closeNotifications(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !modal.hidden) closeNotifications(); });
+})();
 
 // If assets/logo.png is missing, hide the image instead of showing a broken icon
 document.querySelectorAll('.brand-logo').forEach(img => {
